@@ -8,6 +8,8 @@ agent-mode files (godot-editor subagent, /godot skill, Codex mirror) into the pr
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -71,6 +73,32 @@ def _render(tpl: Path, name: str, path: str) -> str:
     return tpl.read_text(encoding="utf-8").replace("{{PROJECT_NAME}}", name).replace("{{PROJECT_PATH}}", path)
 
 
+def _venv_python() -> Path:
+    sub, exe = ("Scripts", "python.exe") if os.name == "nt" else ("bin", "python")
+    return REPO / ".venv" / sub / exe
+
+
+def _write_mcp_json(root: Path, godot_bin: str) -> Path:
+    """Create or merge the project's .mcp.json with the godot-grounding server entry."""
+    mcp_path = root / ".mcp.json"
+    entry = {
+        "command": str(_venv_python()),
+        "args": [str(REPO / "main.py")],
+        "env": {"GODOT_PROJECT": str(root), "GODOT_BIN": godot_bin},
+    }
+    data: dict = {}
+    if mcp_path.exists():
+        try:
+            data = json.loads(mcp_path.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("mcpServers", {})["godot-grounding"] = entry
+    mcp_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
+    return mcp_path
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
     root = (Path(argv[0]) if argv else Path.cwd()).resolve()
@@ -78,10 +106,13 @@ def main(argv: list[str] | None = None) -> int:
         print(f"! warning: no project.godot at {root} — is this a Godot project root?")
     toml_path = root / "godot-mcp.toml"
     name = _project_name(root)
+    godot_bin = "godot"
     if toml_path.exists():
         try:
             import tomllib
-            name = tomllib.loads(toml_path.read_text(encoding="utf-8")).get("project", {}).get("name") or name
+            data = tomllib.loads(toml_path.read_text(encoding="utf-8"))
+            name = data.get("project", {}).get("name") or name
+            godot_bin = data.get("engine", {}).get("godot_bin") or godot_bin
         except Exception:
             pass
         print(f"= kept existing {toml_path.name}")
@@ -100,10 +131,12 @@ def main(argv: list[str] | None = None) -> int:
         dst.write_text(_render(tpl, name, str(root)), encoding="utf-8", newline="\n")
         print(f"+ wrote {dst.relative_to(root)}")
 
+    mcp_path = _write_mcp_json(root, godot_bin)
+    print(f"+ wrote/merged {mcp_path.name} (godot-grounding server)")
+
     print("\nNext:")
-    print("  1. Add the godot-grounding server to this project's .mcp.json (set GODOT_PROJECT to this path).")
-    print("  2. Dump the engine API:  scripts/dump_api.ps1   (needs `godot` on PATH).")
-    print("  3. Reload Claude Code / reconnect MCP, then try /godot.")
+    print("  1. Dump the engine API if you haven't:  setup.ps1   (or scripts/dump_api.ps1).")
+    print("  2. Reload Claude Code / reconnect the MCP server, then try /godot.")
     return 0
 
 

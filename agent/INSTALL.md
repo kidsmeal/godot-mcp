@@ -1,9 +1,12 @@
 # Installing the Godot agent mode
 
-`templates/` holds the source agent-mode files. `python -m godot_mcp.init` renders them
-into a target project (filling in the project name + path) and scaffolds a profile.
+**Easiest:** from the repo root, `.\setup.ps1 -Project "C:\path\to\your\project"` does
+everything below (and the repo bootstrap). The manual path is documented here for reference.
 
-## Install into a project
+`templates/` holds the source agent-mode files. `python -m godot_mcp.init` renders them into a
+target project (filling in name + path), scaffolds the profile, and writes/merges `.mcp.json`.
+
+## Install into a project (manual)
 ```powershell
 $env:PYTHONPATH = "C:\Users\atk67\Documents\godot-mcp\src"
 & C:\Users\atk67\Documents\godot-mcp\.venv\Scripts\python.exe -m godot_mcp.init "C:\path\to\your\godot\project"
@@ -13,6 +16,7 @@ This writes (idempotently — an existing `godot-mcp.toml` is kept):
 | File | Purpose |
 |---|---|
 | `<project>/godot-mcp.toml` | The profile (name, tests, docs, catalogs, lint refs) |
+| `<project>/.mcp.json` | Registers the `godot-grounding` server (merged if present) |
 | `<project>/.claude/agents/godot-editor.md` | The `godot-editor` subagent |
 | `<project>/.claude/skills/godot/SKILL.md` | The `/godot` skill |
 | `<project>/.codex/agents/godot-editor.toml` | Codex mirror of the subagent |

@@ -53,18 +53,17 @@ Capsule Castle codebase.
 
 ## Setup
 
+One command bootstraps the repo (venv, deps, finds Godot and shims it onto PATH, dumps the
+engine API) **and** onboards a project (profile + `/godot` agent mode + `.mcp.json`):
+
 ```powershell
 cd C:\Users\atk67\Documents\godot-mcp
-py -m venv .venv
-.\.venv\Scripts\python -m pip install -U pip -r requirements.txt   # mcp + gdtoolkit
-.\scripts\dump_api.ps1          # writes data\extension_api.json (needs `godot` on PATH)
+.\setup.ps1 -Project "C:\path\to\your\godot\project"
 ```
 
-## Register with Claude Code
-
-Copy `.mcp.json.example` to `.mcp.json` (or merge into your client config), adjust
-paths if needed, then restart the client. Override the target project per-run with
-the `GODOT_PROJECT` env var.
+Flags: `-GodotBin <path>` if Godot isn't auto-found, `-Force` to re-dump the API. Idempotent —
+safe to re-run. Omit `-Project` to just bootstrap the repo. Afterwards, reload Claude Code /
+reconnect the MCP server in the project and use `/godot`.
 
 ## Agent mode
 
@@ -77,14 +76,15 @@ See `agent/INSTALL.md`.
 
 ## Use on another Godot project
 
+Re-run setup with a different project — each is onboarded independently:
+
 ```powershell
-$env:PYTHONPATH = ".\src"
-.\.venv\Scripts\python -m godot_mcp.init "C:\path\to\your\project"   # scaffolds godot-mcp.toml + agent files
+.\setup.ps1 -Project "C:\path\to\another\project"
 ```
 
-Then register the server in that project's `.mcp.json` (set `GODOT_PROJECT`), dump its engine
-API, and reconnect. Everything project-specific — name, test scenes, docs, catalogs, linter
-cross-refs — lives in that project's `godot-mcp.toml`.
+Everything project-specific — name, test scenes, docs, catalogs, linter cross-refs — lives in
+that project's `godot-mcp.toml`; the agent mode and `.mcp.json` are generated for you. (To
+scaffold without re-bootstrapping the repo: `python -m godot_mcp.init <project>`.)
 
 ## Config (env vars)
 
