@@ -102,6 +102,12 @@ def run_tests(filter: str = "", integration: bool = False, timeout: int = 300) -
         return r["err"]
 
     p = _parse_suite(r["out"])
+    framework = config.PROFILE.test_framework
+    if framework != "custom" or (p.get("files_run") is None and p.get("tests_passed") is None):
+        # Non-custom runner (GUT/GdUnit4/…) or a summary we can't parse: trust the exit
+        # code and return the raw tail instead of fabricating counts.
+        verdict = "PASS" if r["rc"] == 0 else "FAIL"
+        return f"{verdict}  (exit {r['rc']}, framework={framework})\n\n{_tail(r['out'] or r['err'], 45)}"
     status = "PASS" if r["rc"] == 0 else "FAIL"
     head = (
         f"{status}  (exit {r['rc']})\n"

@@ -34,6 +34,7 @@ godot_bin = "godot"
 [tests]
 suite = "res://tests/run_all.tscn"
 # integration = "res://tests/run_integration.tscn"
+# framework = "custom"   # or "gut" / "gdunit4" (non-custom => pass/fail by exit code)
 
 # Docs exposed by project_convention (friendly name -> path relative to project root)
 [docs]

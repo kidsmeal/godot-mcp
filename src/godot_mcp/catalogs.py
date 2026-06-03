@@ -56,19 +56,44 @@ def catalog(kind: str = "all") -> str:
     return f'Unknown catalog "{kind}". Available: {avail}'
 
 
+_SKIP_DIRS = {".godot", ".git", ".import"}
+_valid_cache: dict[str, tuple] = {}  # pattern -> (gd_signature, result_set)
+
+
+def _gd_signature() -> tuple[int, float]:
+    """Cheap fingerprint of the project's .gd files (count + mtime sum) — stat only,
+    no reads — so valid_keys can skip the expensive re-scan when nothing changed."""
+    count, mtime_sum = 0, 0.0
+    for dp, dn, fn in os.walk(config.PROJECT_ROOT):
+        dn[:] = [d for d in dn if d not in _SKIP_DIRS]
+        for f in fn:
+            if f.endswith(".gd"):
+                try:
+                    mtime_sum += (Path(dp) / f).stat().st_mtime
+                    count += 1
+                except OSError:
+                    pass
+    return (count, round(mtime_sum, 3))
+
+
 def valid_keys(valid_pattern: str) -> set[str]:
-    """Project-wide set of keys matching a 1-group registration pattern (every .gd)."""
+    """Project-wide set of keys matching a 1-group registration pattern (every .gd),
+    cached against the .gd file signature."""
     try:
         rx = re.compile(valid_pattern)
     except re.error:
         return set()
-    skip = {".godot", ".git", ".import"}
+    sig = _gd_signature()
+    cached = _valid_cache.get(valid_pattern)
+    if cached and cached[0] == sig:
+        return cached[1]
     out: set[str] = set()
     for dp, dn, fn in os.walk(config.PROJECT_ROOT):
-        dn[:] = [d for d in dn if d not in skip]
+        dn[:] = [d for d in dn if d not in _SKIP_DIRS]
         for f in fn:
             if f.endswith(".gd"):
                 out.update(rx.findall(config.read_text(Path(dp) / f) or ""))
+    _valid_cache[valid_pattern] = (sig, out)
     return out
 
 

@@ -25,6 +25,7 @@ class Profile:
     catalogs: list[dict] = field(default_factory=list)       # [{name, file, pattern}]
     catalog_refs: list[dict] = field(default_factory=list)   # [{use_pattern, valid_pattern}]
     index_doc: str = "INDEX"
+    test_framework: str = "custom"                           # custom | gut | gdunit4
 
 
 def _project_name(project_root: Path) -> str:
@@ -66,4 +67,5 @@ def load(project_root: Path) -> Profile:
         catalogs=data.get("catalog", []),
         catalog_refs=data.get("lint_catalog_ref", []),
         index_doc=(proj.get("index_doc") or "INDEX"),
+        test_framework=tests.get("framework", "custom"),
     )
