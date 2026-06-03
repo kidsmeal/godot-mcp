@@ -4,10 +4,10 @@ A Model Context Protocol server that grounds an AI agent in **exact, version-pin
 Godot API** and a **specific project's own conventions** — built for Godot 4.6 and
 tuned to the Capsule Castle project, but pointable at any Godot project.
 
-This is Phases 1–3 of a larger plan (grounding → validate wrappers → convention-linted
-file ops → a `godot-editor` agent mode → optional live editor bridge). It grounds,
-validates (headless tests), and makes parse-checked, convention-linted GDScript edits —
-rolling back any write that doesn't parse.
+This is Phases 1–3 + the agent mode of a larger plan (grounding → validate wrappers →
+convention-linted file ops → a `godot-editor` agent mode → optional live editor bridge).
+It grounds, validates (headless tests), and makes parse-checked, convention-linted GDScript
+edits — rolling back any write that doesn't parse.
 
 ## Why
 
@@ -65,6 +65,14 @@ py -m venv .venv
 Copy `.mcp.json.example` to `.mcp.json` (or merge into your client config), adjust
 paths if needed, then restart the client. Override the target project per-run with
 the `GODOT_PROJECT` env var.
+
+## Agent mode
+
+The `agent/` folder ships a **`godot-editor` subagent** + a **`/godot` skill** (with a Codex
+mirror) that wire these 16 tools into one specialized editing loop: **ground → linted edit →
+test-to-confirm**. The subagent grounds every engine API and project value, edits only through
+the linted/parse-checked writer, and won't report done until the relevant headless tests pass.
+See `agent/INSTALL.md` to install into a project.
 
 ## Config (env vars)
 
