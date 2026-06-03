@@ -127,7 +127,7 @@ def godot_lint(script_path: str) -> str:
     src = config.read_text(edit._abs(script_path))
     if src is None:
         return f"Not found: {script_path}"
-    return lint.format_findings(lint.lint_source(src, script_path))
+    return lint.format_findings(lint.lint_source(src, script_path, valid_effect_types=catalogs.valid_effect_types()))
 
 
 @mcp.tool()
@@ -135,7 +135,7 @@ def godot_lint_source(source: str, path: str = "") -> str:
     """Lint a GDScript snippet/string BEFORE writing it (same rules as godot_lint).
     Use to check generated code prior to saving. 'path' is optional context for
     test-only rules."""
-    return lint.format_findings(lint.lint_source(source, path))
+    return lint.format_findings(lint.lint_source(source, path, valid_effect_types=catalogs.valid_effect_types()))
 
 
 @mcp.tool()

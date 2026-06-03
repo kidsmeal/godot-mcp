@@ -7,7 +7,9 @@ effect_type/sticker keys that don't exist.
 """
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 
 from godot_mcp import config
 
@@ -46,6 +48,26 @@ def autoloads() -> list[tuple[str, str]]:
     if not m:
         return []
     return re.findall(r'^([A-Za-z0-9_]+)="(\*?res://[^"]+)"', m.group(1), re.M)
+
+
+def valid_effect_types() -> set[str]:
+    """Every effect_type key registered ANYWHERE in the project (each
+    register_effect_processor call, incl. hero-local ones) plus the dynamic
+    per-damage-type aliases. Used by the linter to flag unknown effect_type keys."""
+    reg = re.compile(r'register_effect_processor\(\s*&"([^"]+)"')
+    skip = {".godot", ".git", ".import"}
+    out: set[str] = set()
+    for dp, dn, fn in os.walk(config.PROJECT_ROOT):
+        dn[:] = [d for d in dn if d not in skip]
+        for f in fn:
+            if f.endswith(".gd"):
+                out.update(reg.findall(config.read_text(Path(dp) / f) or ""))
+    reg_text = _read("systems/upgrades/upgrade_effect_registry.gd")
+    suffixes = set(re.findall(r'StringName\("%s_([a-z_]+)"', reg_text))
+    for _, dv in damage_types():
+        for suf in suffixes:
+            out.add(f"{dv.lower()}_{suf}")
+    return out
 
 
 def catalog(kind: str = "all") -> str:

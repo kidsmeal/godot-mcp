@@ -19,6 +19,14 @@ SUITE_SCENE = "res://tests/run_all.tscn"
 INTEGRATION_SCENE = "res://tests/run_integration.tscn"
 VERIFY_ENEMIES = "res://tools/dev_scripts/verify_generated_enemies.gd"
 
+_MAINLOOP_RE = re.compile(r"^\s*extends\s+(SceneTree|MainLoop)\b", re.M)
+_EXTENDS_RE = re.compile(r"^\s*extends\s+(\w+)", re.M)
+
+
+def _res_to_abs(res_path: str):
+    rel = res_path[len("res://"):] if res_path.startswith("res://") else res_path
+    return config.PROJECT_ROOT / rel
+
 
 def _run(extra_args: list[str], timeout: int) -> dict:
     """Launch Godot headless, capturing output via --log-file. Returns
@@ -115,6 +123,20 @@ def run_tests(filter: str = "", integration: bool = False, timeout: int = 300) -
 
 
 def run_script(script_path: str, timeout: int = 120) -> str:
+    # Guard: the GUI Godot build pops a BLOCKING modal OS alert when --script targets
+    # a script that isn't a SceneTree/MainLoop (or fails to load), which can hang the
+    # run until the subprocess timeout. Refuse those up front.
+    src = config.read_text(_res_to_abs(script_path))
+    if src is None:
+        return f"Not found: {script_path}"
+    if not _MAINLOOP_RE.search(src):
+        m = _EXTENDS_RE.search(src)
+        ext = m.group(1) if m else "(no extends)"
+        return (
+            f"Refused: godot_run_script needs a script that `extends SceneTree` or `extends MainLoop` "
+            f"(this one extends {ext}). Running other scripts via --script can pop a blocking editor "
+            f"dialog. Use godot_check to parse-check it, or godot_run_tests for the suite."
+        )
     r = _run(["--script", script_path], timeout)
     if r["timeout"]:
         return f"TIMED OUT after {timeout}s.\n{_tail(r['out'] or r['err'])}"

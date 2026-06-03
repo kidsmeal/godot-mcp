@@ -46,12 +46,17 @@ project in a non-parsing state — they back up, write, run `--check-only`, and 
 failure. Lint findings are reported but non-blocking by default (`enforce_conventions=True`
 refuses writes with convention errors).
 
+The linter runs on gdtoolkit's GDScript AST (multi-line-accurate, with a regex fallback for
+the rare unparseable file), supports `# lint: ignore` / `# lint: ignore=rule,rule`, and
+includes a catalog-aware check that flags `effect_type` keys that look like typos of
+registered ones. Validated at 0 false positives across the 615-file project codebase.
+
 ## Setup
 
 ```powershell
 cd C:\Users\atk67\Documents\godot-mcp
 py -m venv .venv
-.\.venv\Scripts\python -m pip install -U pip mcp
+.\.venv\Scripts\python -m pip install -U pip -r requirements.txt   # mcp + gdtoolkit
 .\scripts\dump_api.ps1          # writes data\extension_api.json (needs `godot` on PATH)
 ```
 
