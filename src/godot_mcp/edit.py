@@ -30,6 +30,10 @@ def write_script(res_path: str, content: str, enforce_conventions: bool = False)
         )
 
     target = _abs(res_path)
+    try:
+        target.resolve().relative_to(config.PROJECT_ROOT.resolve())
+    except ValueError:
+        return "Refused: resolved path escapes the project root."
     existed = target.exists()
     backup = target.read_bytes() if existed else None
 

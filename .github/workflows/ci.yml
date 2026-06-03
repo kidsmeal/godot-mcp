@@ -1,0 +1,40 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    env:
+      GODOT_VERSION: 4.6.2-stable   # bump to match the engine you target
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Godot (headless, linux)
+        run: |
+          set -e
+          base="Godot_v${GODOT_VERSION}_linux.x86_64"
+          url="https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}/${base}.zip"
+          curl -fsSL "$url" -o godot.zip
+          unzip -q godot.zip
+          sudo mv "$base" /usr/local/bin/godot
+          sudo chmod +x /usr/local/bin/godot
+          godot --version
+
+      - name: Install dependencies
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install -q --upgrade pip -r requirements.txt
+
+      - name: Dump engine API
+        run: (cd data && godot --headless --dump-extension-api)
+
+      - name: Smoke test
+        run: PYTHONPATH=src .venv/bin/python scripts/ci_smoke.py

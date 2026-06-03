@@ -24,6 +24,13 @@ Onboard a Godot project in the same step:
 $env:GODOT_MCP_PROJECT="C:\path\to\your\game"; iwr -useb https://raw.githubusercontent.com/kidsmeal/godot-mcp/main/install.ps1 | iex
 ```
 
+**macOS / Linux** (needs `godot` on PATH, or set `GODOT_BIN`):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/kidsmeal/godot-mcp/main/install.sh | bash
+# onboard in one step:  GODOT_MCP_PROJECT=/path/to/game curl -fsSL .../install.sh | bash
+```
+
 Then reload Claude Code / reconnect the MCP server in the project and use `/godot`.
 Already cloned? Use **Setup** below.
 

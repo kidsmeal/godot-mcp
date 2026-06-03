@@ -27,7 +27,10 @@ def _specs() -> dict[str, dict]:
 
 
 def _parse(spec: dict):
-    return re.findall(spec["pattern"], _read(spec["file"]))
+    try:
+        return re.findall(spec["pattern"], _read(spec["file"]))
+    except re.error:
+        return []  # malformed profile pattern — surface as empty rather than crash
 
 
 def _format(name: str, matches) -> str:
@@ -55,7 +58,10 @@ def catalog(kind: str = "all") -> str:
 
 def valid_keys(valid_pattern: str) -> set[str]:
     """Project-wide set of keys matching a 1-group registration pattern (every .gd)."""
-    rx = re.compile(valid_pattern)
+    try:
+        rx = re.compile(valid_pattern)
+    except re.error:
+        return set()
     skip = {".godot", ".git", ".import"}
     out: set[str] = set()
     for dp, dn, fn in os.walk(config.PROJECT_ROOT):
