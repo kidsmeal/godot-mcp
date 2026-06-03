@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 
 # --- Target project ---------------------------------------------------------
@@ -42,3 +43,25 @@ def project_version() -> str:
     pg = read_text(PROJECT_ROOT / "project.godot") or ""
     m = re.search(r"config/features=PackedStringArray\(([^)]*)\)", pg)
     return m.group(1).strip() if m else "unknown"
+
+
+def resolve_godot() -> list[str]:
+    """Return a command prefix that launches Godot via subprocess (no shell).
+
+    GODOT_BIN may be an absolute .exe, or 'godot' resolved on PATH. On Windows
+    'godot' resolves to the ~/bin/godot.cmd shim, which CreateProcess can't run
+    directly — so we read the real .exe path out of the shim.
+    """
+    p = Path(GODOT_BIN)
+    if p.is_absolute() and p.exists():
+        return [str(p)]
+    found = shutil.which(GODOT_BIN)
+    if found:
+        if found.lower().endswith((".cmd", ".bat")):
+            shim = read_text(Path(found)) or ""
+            m = re.search(r'"([^"]+\.exe)"', shim)
+            if m and Path(m.group(1)).exists():
+                return [m.group(1)]
+            return ["cmd", "/c", found]
+        return [found]
+    return [GODOT_BIN]

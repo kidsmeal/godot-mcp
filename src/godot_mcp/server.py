@@ -10,7 +10,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from godot_mcp import catalogs, config, engine_api, project_ground
+from godot_mcp import catalogs, config, engine_api, project_ground, runner
 
 mcp = FastMCP("godot-grounding")
 
@@ -82,6 +82,39 @@ def capsule_find_files(subdir: str = ".", pattern: str = "*", limit: int = 500) 
     Windows glob-miss gotcha. subdir is relative to project root; pattern is a
     filename glob like '*.gd' or 'hero_*.tscn'."""
     return project_ground.find_files(subdir, pattern, limit)
+
+
+# --- Validation / feedback loop (Phase 2) -----------------------------------
+@mcp.tool()
+def godot_run_tests(filter: str = "", integration: bool = False, timeout: int = 300) -> str:
+    """Run the project's headless test suite (res://tests/run_all.tscn) and return a
+    structured pass/fail summary: files run, tests/assertions passed-failed, failing
+    files, and failed-assertion messages. 'filter' matches test file path/name
+    (e.g. 'armory', 'wave_clock'). integration=True runs res://tests/run_integration.tscn.
+    Exit code 0 means all passed. Use after editing GDScript to confirm nothing broke."""
+    return runner.run_tests(filter, integration, timeout)
+
+
+@mcp.tool()
+def godot_check(script_path: str, timeout: int = 60) -> str:
+    """Parse-check a single GDScript WITHOUT running it (`--check-only --script`).
+    Catches syntax/parse/type errors before F5. script_path is a res:// path."""
+    return runner.check_script(script_path, timeout)
+
+
+@mcp.tool()
+def godot_run_script(script_path: str, timeout: int = 120) -> str:
+    """Run a GDScript headlessly (`godot --headless --script <path>`) and return its
+    output + exit code. For dev/generator/validator scripts (e.g. under
+    tools/dev_scripts/) designed to run standalone. script_path is a res:// path."""
+    return runner.run_script(script_path, timeout)
+
+
+@mcp.tool()
+def godot_verify_enemies(timeout: int = 120) -> str:
+    """Run the project's existing headless enemy validator
+    (tools/dev_scripts/verify_generated_enemies.gd) and return its report."""
+    return runner.verify_enemies(timeout)
 
 
 def main() -> None:

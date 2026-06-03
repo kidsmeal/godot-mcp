@@ -4,9 +4,9 @@ A Model Context Protocol server that grounds an AI agent in **exact, version-pin
 Godot API** and a **specific project's own conventions** — built for Godot 4.6 and
 tuned to the Capsule Castle project, but pointable at any Godot project.
 
-This is Phase 1 of a larger plan (grounding → validate wrappers → convention-linted
-file ops → a `godot-editor` agent mode → optional live editor bridge). It is
-read-only: it answers questions, it does not yet edit the project.
+This is Phases 1–2 of a larger plan (grounding → validate wrappers → convention-linted
+file ops → a `godot-editor` agent mode → optional live editor bridge). It does not edit
+your project: it answers questions and runs the headless test suite / scripts to verify changes.
 
 ## Why
 
@@ -30,6 +30,13 @@ keys) that don't exist. This server removes both failure modes by serving:
 | `capsule_catalog(kind)` | `effect_types`, `sticker_bases`, `damage_types`, `autoloads`, `all` |
 | `capsule_index()` | The codebase map (`docs/INDEX.md`) |
 | `capsule_find_files(subdir, pattern)` | Windows-glob-safe `res://` file listing |
+| `godot_run_tests(filter, integration)` | Headless test suite → structured pass/fail (files, tests, assertions, failures) |
+| `godot_check(script_path)` | Parse-check one GDScript without running it (`--check-only`) |
+| `godot_run_script(script_path)` | Run a standalone headless dev/validator script |
+| `godot_verify_enemies()` | Run the project's enemy validator script |
+
+The validation tools capture output via Godot's `--log-file` (robust on the Windows
+GUI build) and read pass/fail from the process exit code.
 
 ## Setup
 
