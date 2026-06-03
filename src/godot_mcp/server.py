@@ -12,7 +12,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from godot_mcp import catalogs, config, edit, engine_api, lint, project_ground, refs, runner
+from godot_mcp import catalogs, config, doctor, edit, engine_api, lint, project_ground, refs, runner
 
 mcp = FastMCP("godot-grounding")
 
@@ -30,6 +30,14 @@ def godot_version() -> str:
         except Exception:
             pass
     return f"Engine API grounded to: {ver}\nProject: {config.PROFILE.name} ({config.PROJECT_ROOT})\nFeatures: {config.project_version()}"
+
+
+@mcp.tool()
+def godot_doctor() -> str:
+    """Health check: verifies the engine API dump (and that its version matches the
+    project), the Godot binary is resolvable, gdtoolkit is installed, and the profile's
+    catalog/doc/test-scene paths exist. Run this first when something seems off."""
+    return doctor.report()
 
 
 @mcp.tool()

@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from godot_mcp import config
+from godot_mcp import config, docs
 
 _cache: dict[str, Any] | None = None
 
@@ -54,6 +54,11 @@ def _pretty_type(t: str | None) -> str:
     if t.startswith(("enum::", "bitfield::")):
         return t.split("::", 1)[1]
     return t
+
+
+def _trunc(s: str, n: int) -> str:
+    s = s.strip()
+    return s if len(s) <= n else s[:n].rstrip() + "…"
 
 
 def _method_return(m: dict[str, Any]) -> str:
@@ -101,23 +106,37 @@ def get_class(name: str) -> str:
     if meta:
         lines.append("  " + ", ".join(meta))
 
+    dd = docs.class_docs(real)
+    if dd and (dd["brief"] or dd["desc"]):
+        lines.append("  " + _trunc(dd["brief"] or dd["desc"], 260))
+
     props = c.get("properties") or c.get("members") or []
     if props:
         lines.append("\nProperties:")
         for p in props:
-            lines.append(f'  {p["name"]}: {_pretty_type(p.get("type"))}')
+            line = f'  {p["name"]}: {_pretty_type(p.get("type"))}'
+            if dd and dd["members"].get(p["name"]):
+                line += "  — " + _trunc(dd["members"][p["name"]], 90)
+            lines.append(line)
 
     methods = c.get("methods") or []
     if methods:
         lines.append("\nMethods:")
-        lines.extend("  " + _format_method(m) for m in methods)
+        for m in methods:
+            line = "  " + _format_method(m)
+            if dd and dd["methods"].get(m["name"]):
+                line += "   — " + _trunc(dd["methods"][m["name"]], 90)
+            lines.append(line)
 
     signals = c.get("signals") or []
     if signals:
         lines.append("\nSignals:")
         for s in signals:
             a = ", ".join(f'{x["name"]}: {_pretty_type(x.get("type"))}' for x in s.get("arguments", []))
-            lines.append(f'  signal {s["name"]}({a})')
+            line = f'  signal {s["name"]}({a})'
+            if dd and dd["signals"].get(s["name"]):
+                line += "   — " + _trunc(dd["signals"][s["name"]], 90)
+            lines.append(line)
 
     enums = c.get("enums") or []
     if enums:
@@ -166,7 +185,16 @@ def get_member(class_name: str, member: str) -> str:
 
     if not out:
         return f'No member "{member}" on {real}. Use godot_class("{real}") to list members.'
-    return f"{real}.{member}:\n" + "\n".join("  " + o for o in out)
+    result = f"{real}.{member}:\n" + "\n".join("  " + o for o in out)
+    dd = docs.class_docs(real)
+    if dd:
+        ml2 = member.lower()
+        for bucket in ("methods", "members", "signals", "constants"):
+            desc = next((v for k, v in dd[bucket].items() if k.lower() == ml2 and v), "")
+            if desc:
+                result += "\n\n" + desc
+                break
+    return result
 
 
 def search(query: str, limit: int = 25) -> str:

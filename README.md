@@ -49,13 +49,15 @@ keys) that don't exist. This server removes both failure modes by serving:
 | Tool | What it grounds |
 |---|---|
 | `godot_version` | Engine version the API is pinned to + project features |
-| `godot_class(name)` | Full class API: methods, properties, signals, enums, constants |
-| `godot_member(class_name, member)` | One exact signature |
+| `godot_doctor` | Health check: API dump/version, Godot binary, gdtoolkit, profile paths |
+| `godot_class(name)` | Full class API **+ doc descriptions**: methods, properties, signals, enums, constants |
+| `godot_member(class_name, member)` | One exact signature **+ its doc description** |
 | `godot_search(query, limit)` | Find classes / `Class.method` by keyword |
 | `project_convention(topic)` | Search the profile's docs (conventions / design guides) |
 | `project_catalog(kind)` | Catalogs from the profile (e.g. `effect_types`, `damage_types`) + `autoloads`, `all` |
 | `project_index()` | The configured codebase-map doc |
 | `project_find_files(subdir, pattern)` | Windows-glob-safe `res://` file listing |
+| `project_find_refs(symbol, kind)` | Classified references to an identifier across all `.gd` (def/call/type/…) |
 | `godot_run_tests(filter, integration)` | Headless test suite → structured pass/fail (files, tests, assertions, failures) |
 | `godot_check(script_path)` | Parse-check one GDScript without running it (`--check-only`) |
 | `godot_run_script(script_path)` | Run a headless SceneTree/MainLoop script (validators/generators) |
@@ -75,6 +77,10 @@ the rare unparseable file), supports `# lint: ignore` / `# lint: ignore=rule,rul
 includes a catalog-aware check that flags catalog keys (per the profile's `lint_catalog_ref`)
 that look like typos of registered ones. Validated at 0 false positives across the 615-file
 Capsule Castle codebase.
+
+`godot_class` / `godot_member` enrich signatures with the engine's official **doc
+descriptions**, fetched lazily per class from the matching Godot version tag and cached under
+`data/godot_docs/` (offline after first fetch; set `GODOT_MCP_DOCS=0` to disable).
 
 ## Setup
 
@@ -129,3 +135,4 @@ untouched):
 | `GODOT_BIN` | profile `[engine] godot_bin`, else `godot` |
 | `GODOT_MCP_DATA` | `<repo>\data` |
 | `GODOT_MCP_PROFILE` | `<project>\godot-mcp.toml` |
+| `GODOT_MCP_DOCS` | `1` (set `0` to disable doc-description fetching) |
