@@ -150,6 +150,14 @@ def godot_write_script(script_path: str, content: str, enforce_conventions: bool
 
 
 @mcp.tool()
+def godot_fix_script(script_path: str) -> str:
+    """Apply safe, mechanical lint fixes and re-verify through the parse-checked writer
+    (rolls back if anything breaks): untyped `var x = v` → `var x := v`, and add `-> void`
+    to functions with no value-returning return. script_path is a res:// path."""
+    return edit.auto_fix(script_path)
+
+
+@mcp.tool()
 def godot_patch_script(script_path: str, old_string: str, new_string: str, enforce_conventions: bool = False) -> str:
     """Replace an exact unique substring in a GDScript, then parse-check with rollback
     (like godot_write_script). old_string must match the file exactly and uniquely.

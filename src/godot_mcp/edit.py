@@ -7,9 +7,13 @@ but enforce_conventions=True will refuse a write that has convention errors.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from godot_mcp import catalogs, config, lint, runner
+
+_UNTYPED_VAR = re.compile(r"^(\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:static\s+)?var\s+\w+)\s*=\s*(?!=)(.*)$")
+_FUNC_NO_RET = re.compile(r"^(\s*)((?:@\w+(?:\([^)]*\))?\s+)*(?:static\s+)?func\s+\w+\s*\(.*?\))\s*:\s*$")
 
 
 def _abs(res_path: str) -> Path:
@@ -67,3 +71,47 @@ def patch_script(res_path: str, old_string: str, new_string: str, enforce_conven
     if count > 1:
         return f"Patch ambiguous: old_string appears {count} times — add surrounding context to make it unique."
     return write_script(res_path, text.replace(old_string, new_string), enforce_conventions)
+
+
+def auto_fix(res_path: str) -> str:
+    """Apply safe, mechanical lint fixes, then write through the parse-checked writer
+    (rolls back if it breaks). Fixes: untyped `var x = v` -> `var x := v`; add `-> void`
+    to functions with no value-returning `return`."""
+    if not res_path.endswith(".gd"):
+        return "Refused: path must be a .gd script."
+    text = config.read_text(_abs(res_path))
+    if text is None:
+        return f"Not found: {res_path}"
+    lines = text.splitlines()
+    fixes: list[str] = []
+
+    for i, line in enumerate(lines):
+        m = _UNTYPED_VAR.match(line)
+        if m and m.group(2).strip():
+            lines[i] = f"{m.group(1)} := {m.group(2)}".rstrip()
+            fixes.append(f"L{i + 1}: untyped var -> `:=`")
+
+    for i, line in enumerate(lines):
+        m = _FUNC_NO_RET.match(line)
+        if not m or "->" in line:
+            continue
+        indent = len(m.group(1))
+        has_value_return = False
+        for bl in lines[i + 1:]:
+            if not bl.strip() or bl.lstrip().startswith("#"):
+                continue
+            if (len(bl) - len(bl.lstrip())) <= indent:
+                break
+            if re.match(r"^\s*return\s+\S", bl):
+                has_value_return = True
+                break
+        if not has_value_return:
+            lines[i] = f"{m.group(1)}{m.group(2)} -> void:"
+            fixes.append(f"L{i + 1}: missing return type, added `-> void`")
+
+    if not fixes:
+        return "No auto-fixable issues found (untyped `var x = v`, or void funcs missing `-> void`)."
+
+    new_text = "\n".join(lines) + ("\n" if text.endswith("\n") else "")
+    result = write_script(res_path, new_text)
+    return f"Applied {len(fixes)} fix(es):\n" + "\n".join("  " + f for f in fixes) + "\n\n--- writer ---\n" + result
