@@ -10,7 +10,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from godot_mcp import catalogs, config, engine_api, project_ground, runner
+from godot_mcp import catalogs, config, edit, engine_api, lint, project_ground, runner
 
 mcp = FastMCP("godot-grounding")
 
@@ -115,6 +115,44 @@ def godot_verify_enemies(timeout: int = 120) -> str:
     """Run the project's existing headless enemy validator
     (tools/dev_scripts/verify_generated_enemies.gd) and return its report."""
     return runner.verify_enemies(timeout)
+
+
+# --- Convention-linted edits (Phase 3) --------------------------------------
+@mcp.tool()
+def godot_lint(script_path: str) -> str:
+    """Lint an existing GDScript against this project's AGENTS.md conventions:
+    strict typing (var/param/return), past-tense signals (no on_ prefix), PascalCase
+    class_name, ALL_CAPS consts, snake_case funcs, no .godot/imported refs. Reports
+    line-numbered errors/warnings. Pure read — does not modify the file."""
+    src = config.read_text(edit._abs(script_path))
+    if src is None:
+        return f"Not found: {script_path}"
+    return lint.format_findings(lint.lint_source(src, script_path))
+
+
+@mcp.tool()
+def godot_lint_source(source: str, path: str = "") -> str:
+    """Lint a GDScript snippet/string BEFORE writing it (same rules as godot_lint).
+    Use to check generated code prior to saving. 'path' is optional context for
+    test-only rules."""
+    return lint.format_findings(lint.lint_source(source, path))
+
+
+@mcp.tool()
+def godot_write_script(script_path: str, content: str, enforce_conventions: bool = False) -> str:
+    """Write a full GDScript file safely: backs up, writes, runs Godot --check-only,
+    and ROLLS BACK on any parse error (never leaves the project non-parsing). Returns
+    lint findings. enforce_conventions=True refuses writes that have convention errors.
+    script_path is a res:// path."""
+    return edit.write_script(script_path, content, enforce_conventions)
+
+
+@mcp.tool()
+def godot_patch_script(script_path: str, old_string: str, new_string: str, enforce_conventions: bool = False) -> str:
+    """Replace an exact unique substring in a GDScript, then parse-check with rollback
+    (like godot_write_script). old_string must match the file exactly and uniquely.
+    script_path is a res:// path."""
+    return edit.patch_script(script_path, old_string, new_string, enforce_conventions)
 
 
 def main() -> None:

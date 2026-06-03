@@ -4,9 +4,10 @@ A Model Context Protocol server that grounds an AI agent in **exact, version-pin
 Godot API** and a **specific project's own conventions** — built for Godot 4.6 and
 tuned to the Capsule Castle project, but pointable at any Godot project.
 
-This is Phases 1–2 of a larger plan (grounding → validate wrappers → convention-linted
-file ops → a `godot-editor` agent mode → optional live editor bridge). It does not edit
-your project: it answers questions and runs the headless test suite / scripts to verify changes.
+This is Phases 1–3 of a larger plan (grounding → validate wrappers → convention-linted
+file ops → a `godot-editor` agent mode → optional live editor bridge). It grounds,
+validates (headless tests), and makes parse-checked, convention-linted GDScript edits —
+rolling back any write that doesn't parse.
 
 ## Why
 
@@ -34,9 +35,16 @@ keys) that don't exist. This server removes both failure modes by serving:
 | `godot_check(script_path)` | Parse-check one GDScript without running it (`--check-only`) |
 | `godot_run_script(script_path)` | Run a standalone headless dev/validator script |
 | `godot_verify_enemies()` | Run the project's enemy validator script |
+| `godot_lint(script_path)` | Lint one file against AGENTS.md conventions (typing, signals, naming, paths) |
+| `godot_lint_source(source)` | Lint a GDScript string before writing it |
+| `godot_write_script(path, content)` | Write a full file with parse-check + rollback; reports lint |
+| `godot_patch_script(path, old, new)` | Exact-match patch with parse-check + rollback |
 
 The validation tools capture output via Godot's `--log-file` (robust on the Windows
-GUI build) and read pass/fail from the process exit code.
+GUI build) and read pass/fail from the process exit code. The edit tools never leave the
+project in a non-parsing state — they back up, write, run `--check-only`, and roll back on
+failure. Lint findings are reported but non-blocking by default (`enforce_conventions=True`
+refuses writes with convention errors).
 
 ## Setup
 
