@@ -143,8 +143,9 @@ in **Project → Project Settings → Plugins**, keep the editor open, and these
 | `godot_editor_scene_tree` | Live node tree of the edited scene |
 | `godot_open_scene(path)` | Open a scene in the editor |
 
-The bridge listens on `127.0.0.1:9123` (override with `GODOT_BRIDGE_PORT`). Tools degrade
-gracefully when the editor/addon isn't running.
+The bridge listens on `127.0.0.1:9123`. To use a different port, set `GODOT_BRIDGE_PORT`
+for **both** the MCP server and the Godot editor (the addon reads it on startup) so the two
+agree. Tools degrade gracefully when the editor/addon isn't running.
 
 ## Config (env vars)
 
@@ -155,4 +156,4 @@ gracefully when the editor/addon isn't running.
 | `GODOT_MCP_DATA` | `<repo>\data` |
 | `GODOT_MCP_PROFILE` | `<project>\godot-mcp.toml` |
 | `GODOT_MCP_DOCS` | `1` (set `0` to disable doc-description fetching) |
-| `GODOT_BRIDGE_PORT` | `9123` (live editor bridge) |
+| `GODOT_BRIDGE_PORT` | `9123` (live editor bridge — set for both the MCP server and the editor) |

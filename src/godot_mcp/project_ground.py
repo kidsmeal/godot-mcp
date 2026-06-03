@@ -47,7 +47,7 @@ def convention(topic: str = "") -> str:
     topic = topic.strip()
     if not topic:
         return (
-            "Convention/design docs available. Call capsule_convention('<topic>') "
+            "Convention/design docs available. Call project_convention('<topic>') "
             "to pull matching sections.\n\n" + list_docs()
         )
     ql = topic.lower()
@@ -63,7 +63,7 @@ def convention(topic: str = "") -> str:
                     snippet = snippet[:1800] + "\n…(truncated)"
                 hits.append(f"### [{name}] {head}\n{snippet}")
     if not hits:
-        return f'No sections matching "{topic}". Call capsule_convention() to list docs.'
+        return f'No sections matching "{topic}". Call project_convention() to list docs.'
     return "\n\n---\n\n".join(hits[:8])
 
 
@@ -80,7 +80,10 @@ def find_files(subdir: str = ".", pattern: str = "*", limit: int = 500) -> str:
     Replaces Windows glob (documented to silently miss files in this project).
     """
     root = config.PROJECT_ROOT.resolve()
-    base = (config.PROJECT_ROOT / subdir).resolve()
+    try:
+        base = config.resolve_project_path(subdir)
+    except config.PathEscapeError:
+        return f"Refused: {subdir} resolves outside the project root."
     if not base.exists():
         return f"Path not found: {subdir}"
     skip = {".godot", ".git", ".import", "__pycache__"}
@@ -94,7 +97,7 @@ def find_files(subdir: str = ".", pattern: str = "*", limit: int = 500) -> str:
                     rel = full.resolve().relative_to(root)
                     out.append("res://" + str(rel).replace("\\", "/"))
                 except ValueError:
-                    out.append(str(full))
+                    continue  # symlinked outside the root — skip rather than leak an absolute path
                 if len(out) >= limit:
                     return "\n".join(out) + f"\n…(truncated at {limit}; narrow with subdir/pattern)"
     return "\n".join(out) if out else f'No files matching "{pattern}" under {subdir}'

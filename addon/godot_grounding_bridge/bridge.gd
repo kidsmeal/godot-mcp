@@ -6,18 +6,29 @@ extends EditorPlugin
 ## can drive the editor: ping, run/stop the game, open scenes, read the edited scene tree.
 ## Read-only-ish: it only calls EditorInterface play/stop/open + walks the scene tree.
 
-const PORT := 9123
+const DEFAULT_PORT := 9123
 
 var _server := TCPServer.new()
 var _clients: Array[StreamPeerTCP] = []
+var _port := DEFAULT_PORT
+
+
+## Honor GODOT_BRIDGE_PORT so the addon and the MCP client agree on the port
+## (the Python side reads the same env var). Both processes must see it set.
+func _resolve_port() -> int:
+	var env := OS.get_environment("GODOT_BRIDGE_PORT")
+	if not env.is_empty() and env.is_valid_int():
+		return env.to_int()
+	return DEFAULT_PORT
 
 
 func _enter_tree() -> void:
-	var err := _server.listen(PORT, "127.0.0.1")
+	_port = _resolve_port()
+	var err := _server.listen(_port, "127.0.0.1")
 	if err != OK:
-		push_warning("godot-grounding bridge: could not listen on %d (%s)" % [PORT, error_string(err)])
+		push_warning("godot-grounding bridge: could not listen on %d (%s)" % [_port, error_string(err)])
 	else:
-		print("godot-grounding bridge: listening on 127.0.0.1:%d" % PORT)
+		print("godot-grounding bridge: listening on 127.0.0.1:%d" % _port)
 	set_process(true)
 
 

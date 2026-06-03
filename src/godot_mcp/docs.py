@@ -37,8 +37,45 @@ def _version_tag() -> str:
     return _tag
 
 
+_BBCODE_URL = re.compile(r"\[url=[^\]]*\]([^\[]*)\[/url\]")
+_BBCODE_REF = re.compile(
+    r"\[(?:method|member|signal|constant|enum|param|theme_item|annotation|constructor|operator)"
+    r"\s+([^\]]+)\]"
+)
+_BBCODE_DROP = {
+    "b", "/b", "i", "/i", "u", "/u", "s", "/s", "code", "/code",
+    "codeblock", "/codeblock", "codeblocks", "/codeblocks", "gdscript", "/gdscript",
+    "csharp", "/csharp", "kbd", "/kbd", "center", "/center", "color", "/color",
+}
+_BBCODE_TAG = re.compile(r"\[([^\[\]]+)\]")
+_BBCODE_IDENT = re.compile(r"^@?[A-Za-z_]\w*(?:\.\w+)*$")  # [Vector2], [Node.method], [@GlobalScope]
+
+
+def _strip_bbcode(text: str) -> str:
+    """Convert Godot doc BBCode to plain text for the agent: keep link text and
+    reference names (`[method foo]` -> `foo`, `[Vector2]` -> `Vector2`), drop
+    formatting tags (`[b]`, `[code]`, code-block language tags), `[br]` -> space.
+    Leaves bracketed prose that ISN'T BBCode untouched (e.g. a numeric interval
+    `[0.0, 1.0]` or an array literal), so only real markup is removed."""
+    text = _BBCODE_URL.sub(r"\1", text)
+    text = _BBCODE_REF.sub(r"\1", text)
+
+    def _repl(m: "re.Match[str]") -> str:
+        inner = m.group(1).strip()
+        low = inner.lower()
+        if low == "br":
+            return " "
+        if low in _BBCODE_DROP:
+            return ""
+        if _BBCODE_IDENT.match(inner):  # bare type/identifier reference -> keep the name
+            return inner
+        return m.group(0)  # not a tag we recognize -> leave as-is
+
+    return _BBCODE_TAG.sub(_repl, text)
+
+
 def _norm(text: str | None) -> str:
-    return re.sub(r"\s+", " ", text).strip() if text else ""
+    return re.sub(r"\s+", " ", _strip_bbcode(text)).strip() if text else ""
 
 
 def _fetch_xml(name: str) -> str | None:

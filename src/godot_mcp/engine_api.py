@@ -192,7 +192,7 @@ def get_member(class_name: str, member: str) -> str:
         for bucket in ("methods", "members", "signals", "constants"):
             desc = next((v for k, v in dd[bucket].items() if k.lower() == ml2 and v), "")
             if desc:
-                result += "\n\n" + desc
+                result += "\n\n" + _trunc(desc, 700)
                 break
     return result
 

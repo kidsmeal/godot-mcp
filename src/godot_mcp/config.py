@@ -28,6 +28,28 @@ DATA_DIR = Path(os.environ.get("GODOT_MCP_DATA", str(REPO_ROOT / "data")))
 EXTENSION_API = DATA_DIR / "extension_api.json"
 
 
+class PathEscapeError(ValueError):
+    """Raised when a requested path resolves outside the project root."""
+
+
+def resolve_project_path(path: str) -> Path:
+    """Resolve a res://-or-relative path to an absolute Path guaranteed to live
+    under PROJECT_ROOT, raising PathEscapeError if it would escape (covers '..',
+    absolute paths, and symlinks via .resolve()).
+
+    The single containment check every file-taking tool should share — read or
+    write — so escapes fail with a clean refusal instead of leaking outside paths.
+    """
+    rel = path[len("res://"):] if path.startswith("res://") else path
+    root = PROJECT_ROOT.resolve()
+    target = (PROJECT_ROOT / rel).resolve()
+    try:
+        target.relative_to(root)
+    except ValueError as e:
+        raise PathEscapeError(path) from e
+    return target
+
+
 def read_text(path: Path) -> str | None:
     """Read a UTF-8 text file, tolerating odd bytes. Returns None if unreadable."""
     try:
