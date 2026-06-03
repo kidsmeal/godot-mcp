@@ -12,7 +12,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from godot_mcp import catalogs, config, doctor, edit, engine_api, lint, project_ground, refs, runner
+from godot_mcp import catalogs, config, doctor, edit, engine_api, lint, project_ground, refs, runner, scene
 
 mcp = FastMCP("godot-grounding")
 
@@ -92,6 +92,22 @@ def project_find_files(subdir: str = ".", pattern: str = "*", limit: int = 500) 
     Windows glob-miss gotcha. subdir is relative to project root; pattern is a
     filename glob like '*.gd' or 'hero_*.tscn'."""
     return project_ground.find_files(subdir, pattern, limit)
+
+
+@mcp.tool()
+def project_scene(scene_path: str) -> str:
+    """Summarize a .tscn without opening the editor: header (uid/format), ext_resource
+    dependencies, sub_resources, the node tree (name, type or instanced scene, attached
+    script), and signal connections. scene_path is a res:// path."""
+    return scene.describe(scene_path)
+
+
+@mcp.tool()
+def godot_lint_scene(scene_path: str) -> str:
+    """Lint a .tscn for silent breakage: ext_resource paths that don't exist,
+    .godot/imported references, and type-as-name nodes (e.g. a node literally named
+    'Area2D'). scene_path is a res:// path."""
+    return lint.format_findings(scene.lint_scene(scene_path))
 
 
 @mcp.tool()

@@ -58,6 +58,8 @@ keys) that don't exist. This server removes both failure modes by serving:
 | `project_index()` | The configured codebase-map doc |
 | `project_find_files(subdir, pattern)` | Windows-glob-safe `res://` file listing |
 | `project_find_refs(symbol, kind)` | Classified references to an identifier across all `.gd` (def/call/type/…) |
+| `project_scene(scene_path)` | Summarize a `.tscn`: deps, node tree, scripts, connections |
+| `godot_lint_scene(scene_path)` | Lint a `.tscn`: missing ext_resources, `.godot/imported`, type-as-name |
 | `godot_run_tests(filter, integration)` | Headless test suite → structured pass/fail (files, tests, assertions, failures) |
 | `godot_check(script_path)` | Parse-check one GDScript without running it (`--check-only`) |
 | `godot_run_script(script_path)` | Run a headless SceneTree/MainLoop script (validators/generators) |
