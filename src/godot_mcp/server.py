@@ -12,7 +12,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from godot_mcp import catalogs, config, edit, engine_api, lint, project_ground, runner
+from godot_mcp import catalogs, config, edit, engine_api, lint, project_ground, refs, runner
 
 mcp = FastMCP("godot-grounding")
 
@@ -84,6 +84,16 @@ def project_find_files(subdir: str = ".", pattern: str = "*", limit: int = 500) 
     Windows glob-miss gotcha. subdir is relative to project root; pattern is a
     filename glob like '*.gd' or 'hero_*.tscn'."""
     return project_ground.find_files(subdir, pattern, limit)
+
+
+@mcp.tool()
+def project_find_refs(symbol: str, kind: str = "all", limit: int = 200) -> str:
+    """Find references to an identifier (function, class_name, signal, const, type)
+    across all project .gd files, classified by kind: def, call, type, member, extends,
+    ref. Comment/string-aware (beats grep) and Windows-glob-safe — use before a rename
+    or to gauge a change's blast radius. kind filters the listing ('all','def','call',
+    'type','member','extends','ref'). Name-based, not type-resolved."""
+    return refs.find_refs(symbol, kind, limit)
 
 
 # --- Convention-linted edits ------------------------------------------------
