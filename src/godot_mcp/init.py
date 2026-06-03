@@ -175,6 +175,15 @@ def main(argv: list[str] | None = None) -> int:
     mcp_path = _write_mcp_json(root, godot_bin)
     print(f"+ wrote/merged {mcp_path.name} (godot-grounding server)")
 
+    addon_src = REPO / "addon" / "godot_grounding_bridge"
+    if addon_src.exists():
+        addon_dst = root / "addons" / "godot_grounding_bridge"
+        addon_dst.mkdir(parents=True, exist_ok=True)
+        for f in addon_src.iterdir():
+            if f.is_file():
+                (addon_dst / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+        print(f"+ wrote {addon_dst.relative_to(root)}/  (optional: enable in Project > Project Settings > Plugins for the live editor bridge)")
+
     print("\nNext:")
     print("  1. Dump the engine API if you haven't:  setup.ps1   (or scripts/dump_api.ps1).")
     print("  2. Reload Claude Code / reconnect the MCP server, then try /godot.")

@@ -67,6 +67,7 @@ keys) that don't exist. This server removes both failure modes by serving:
 | `godot_lint_source(source)` | Lint a GDScript string before writing it |
 | `godot_write_script(path, content)` | Write a full file with parse-check + rollback; reports lint |
 | `godot_patch_script(path, old, new)` | Exact-match patch with parse-check + rollback |
+| `godot_fix_script(path)` | Apply safe mechanical lint fixes (`:=`, `-> void`) + re-verify |
 
 The validation tools capture output via Godot's `--log-file` (robust on the Windows
 GUI build) and read pass/fail from the process exit code. The edit tools never leave the
@@ -129,6 +130,22 @@ untouched):
 .\setup.ps1 -Uninstall -Project "C:\path\to\your\game"
 ```
 
+## Live editor bridge (optional)
+
+`init` installs an EditorPlugin (`addons/godot_grounding_bridge/`) into the project. Enable it
+in **Project → Project Settings → Plugins**, keep the editor open, and these tools can drive it:
+
+| Tool | Action |
+|---|---|
+| `godot_editor_ping` | Check the bridge connection / editor version |
+| `godot_run_game(scene)` | Play the `main` or `current` scene |
+| `godot_stop_game` | Stop the running scene |
+| `godot_editor_scene_tree` | Live node tree of the edited scene |
+| `godot_open_scene(path)` | Open a scene in the editor |
+
+The bridge listens on `127.0.0.1:9123` (override with `GODOT_BRIDGE_PORT`). Tools degrade
+gracefully when the editor/addon isn't running.
+
 ## Config (env vars)
 
 | Var | Default |
@@ -138,3 +155,4 @@ untouched):
 | `GODOT_MCP_DATA` | `<repo>\data` |
 | `GODOT_MCP_PROFILE` | `<project>\godot-mcp.toml` |
 | `GODOT_MCP_DOCS` | `1` (set `0` to disable doc-description fetching) |
+| `GODOT_BRIDGE_PORT` | `9123` (live editor bridge) |

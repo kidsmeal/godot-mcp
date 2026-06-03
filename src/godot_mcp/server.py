@@ -12,7 +12,7 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from godot_mcp import catalogs, config, doctor, edit, engine_api, lint, project_ground, refs, runner, scene
+from godot_mcp import bridge, catalogs, config, doctor, edit, engine_api, lint, project_ground, refs, runner, scene
 
 mcp = FastMCP("godot-grounding")
 
@@ -188,6 +188,41 @@ def godot_run_script(script_path: str, timeout: int = 120) -> str:
     scripts) and return its output + exit code. Refuses other scripts (which can pop a
     blocking editor dialog). script_path is a res:// path."""
     return runner.run_script(script_path, timeout)
+
+
+# --- Live editor bridge (optional 'Godot Grounding Bridge' addon) -----------
+@mcp.tool()
+def godot_editor_ping() -> str:
+    """Check the live editor bridge: returns the running Godot editor version if the
+    'Godot Grounding Bridge' addon is enabled and the editor is open, else how to fix it.
+    Call this before the other godot_editor/run tools."""
+    return bridge.ping()
+
+
+@mcp.tool()
+def godot_run_game(scene: str = "main") -> str:
+    """Play the project in the open Godot editor: scene='main' (the project main scene)
+    or 'current' (the scene being edited). Requires the editor bridge addon."""
+    return bridge.run_game(scene)
+
+
+@mcp.tool()
+def godot_stop_game() -> str:
+    """Stop the running game in the Godot editor (editor bridge addon required)."""
+    return bridge.stop_game()
+
+
+@mcp.tool()
+def godot_editor_scene_tree() -> str:
+    """Return the node tree of the scene currently open in the Godot editor (live, via the
+    editor bridge addon)."""
+    return bridge.scene_tree()
+
+
+@mcp.tool()
+def godot_open_scene(scene_path: str) -> str:
+    """Open a scene (res:// path) in the Godot editor via the editor bridge addon."""
+    return bridge.open_scene(scene_path)
 
 
 def main() -> None:
