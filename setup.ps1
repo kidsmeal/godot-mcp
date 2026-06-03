@@ -14,13 +14,23 @@
 param(
   [string]$Project,
   [string]$GodotBin,
-  [switch]$Force
+  [switch]$Force,
+  [switch]$Uninstall
 )
 $ErrorActionPreference = "Stop"
 $Root = $PSScriptRoot
 $Py   = Join-Path $Root ".venv\Scripts\python.exe"
 
 function Step($m) { Write-Host "==> $m" -ForegroundColor Cyan }
+
+# Uninstall the integration from a project (repo untouched).
+if ($Uninstall) {
+  if (-not $Project) { Write-Error "Uninstall requires -Project <path>"; exit 1 }
+  $pyExe = if (Test-Path $Py) { $Py } else { "py" }
+  $env:PYTHONPATH = Join-Path $Root "src"
+  & $pyExe -m godot_mcp.init --uninstall $Project
+  exit 0
+}
 
 # 1) venv
 if (-not (Test-Path $Py)) {

@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import sys
 from pathlib import Path
 
@@ -89,7 +90,7 @@ def _write_mcp_json(root: Path, godot_bin: str) -> Path:
     data: dict = {}
     if mcp_path.exists():
         try:
-            data = json.loads(mcp_path.read_text(encoding="utf-8"))
+            data = json.loads(mcp_path.read_text(encoding="utf-8-sig"))
         except Exception:
             data = {}
     if not isinstance(data, dict):
@@ -99,9 +100,48 @@ def _write_mcp_json(root: Path, godot_bin: str) -> Path:
     return mcp_path
 
 
+def _uninstall(root: Path) -> int:
+    removed: list[str] = []
+    mcp_path = root / ".mcp.json"
+    if mcp_path.exists():
+        try:
+            data = json.loads(mcp_path.read_text(encoding="utf-8-sig"))
+        except Exception:
+            data = None
+        if isinstance(data, dict) and "godot-grounding" in data.get("mcpServers", {}):
+            del data["mcpServers"]["godot-grounding"]
+            if data.get("mcpServers"):
+                mcp_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
+                removed.append(".mcp.json (removed godot-grounding entry)")
+            else:
+                mcp_path.unlink()
+                removed.append(".mcp.json (deleted — no other servers)")
+    for rel in (".claude/agents/godot-editor.md", ".codex/agents/godot-editor.toml", "godot-mcp.toml"):
+        p = root / rel
+        if p.exists():
+            p.unlink()
+            removed.append(rel)
+    skill = root / ".claude" / "skills" / "godot"
+    if skill.exists():
+        shutil.rmtree(skill)
+        removed.append(".claude/skills/godot/")
+
+    print(f"Uninstalled godot-grounding from {root}:")
+    for r in removed:
+        print(f"  - {r}")
+    if not removed:
+        print("  (nothing to remove)")
+    print("\nReload Claude Code / reconnect to drop the server. The godot-mcp repo itself is untouched.")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     argv = sys.argv[1:] if argv is None else argv
-    root = (Path(argv[0]) if argv else Path.cwd()).resolve()
+    uninstall = "--uninstall" in argv
+    positionals = [a for a in argv if not a.startswith("-")]
+    root = (Path(positionals[0]) if positionals else Path.cwd()).resolve()
+    if uninstall:
+        return _uninstall(root)
     if not (root / "project.godot").exists():
         print(f"! warning: no project.godot at {root} — is this a Godot project root?")
     toml_path = root / "godot-mcp.toml"

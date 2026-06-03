@@ -9,6 +9,24 @@ convention-linted file ops → a `godot-editor` agent mode → optional live edi
 It grounds, validates (headless tests), and makes parse-checked, convention-linted GDScript
 edits — rolling back any write that doesn't parse.
 
+## Install (one-liner)
+
+PowerShell — clones the repo to `%USERPROFILE%\godot-mcp` and bootstraps everything (venv,
+deps, Godot on PATH, engine-API dump):
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/kidsmeal/godot-mcp/main/install.ps1 | iex
+```
+
+Onboard a Godot project in the same step:
+
+```powershell
+$env:GODOT_MCP_PROJECT="C:\path\to\your\game"; iwr -useb https://raw.githubusercontent.com/kidsmeal/godot-mcp/main/install.ps1 | iex
+```
+
+Then reload Claude Code / reconnect the MCP server in the project and use `/godot`.
+Already cloned? Use **Setup** below.
+
 ## Why
 
 Generic models hallucinate old Godot APIs (3.x renames, `yield`→`await`,
@@ -85,6 +103,16 @@ Re-run setup with a different project — each is onboarded independently:
 Everything project-specific — name, test scenes, docs, catalogs, linter cross-refs — lives in
 that project's `godot-mcp.toml`; the agent mode and `.mcp.json` are generated for you. (To
 scaffold without re-bootstrapping the repo: `python -m godot_mcp.init <project>`.)
+
+## Uninstall
+
+Remove the integration from a project — deletes the agent files + `godot-mcp.toml` and removes
+the `godot-grounding` entry from its `.mcp.json` (other MCP servers preserved; the repo is
+untouched):
+
+```powershell
+.\setup.ps1 -Uninstall -Project "C:\path\to\your\game"
+```
 
 ## Config (env vars)
 
