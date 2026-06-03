@@ -24,8 +24,6 @@ except Exception:  # pragma: no cover
 
 PASCAL_RE = re.compile(r"[A-Z][A-Za-z0-9]*$")
 SUPPRESS_RE = re.compile(r"#\s*lint:\s*ignore(?:=([\w,\-]+))?")
-EFFECT_USE_RE = re.compile(r'effect_type"?\s*[:=]\s*&?"([^"]+)"')
-LOCAL_REG_RE = re.compile(r'register_effect_processor\(\s*&"([^"]+)"')
 PLAIN_ASSERT_RE = re.compile(r"(?<![\w.])assert\s*\(")
 
 # Regex fallback (used only when gdtoolkit can't parse a file).
@@ -233,30 +231,34 @@ def _lev(a: str, b: str, cap: int = 2) -> int:
     return prev[-1]
 
 
-def _catalog_findings(source, valid_effect_types):
-    """Flag effect_type keys that are unregistered AND look like a typo of a real
-    key (edit distance <= 2). Hero/series effect_types are validated via mechanisms
-    we can't fully see, so only near-misses (likely typos/hallucinations) are flagged."""
-    if not valid_effect_types:
+def _catalog_findings(source, catalog_refs):
+    """For each profile catalog-ref {use_pattern, valid_pattern, valid_set}: flag a
+    use that is unregistered AND looks like a typo of a registered key (edit distance
+    <= 2). Only near-misses are flagged, so novel intentional keys aren't false-positived."""
+    if not catalog_refs:
         return []
-    known = set(valid_effect_types) | set(LOCAL_REG_RE.findall(source))
     out: list[dict] = []
-    for i, line in enumerate(source.splitlines(), start=1):
-        if line.lstrip().startswith("#"):
-            continue
-        for m in EFFECT_USE_RE.finditer(line):
-            key = m.group(1)
-            if not key or key in known:
+    for ref in catalog_refs:
+        use_rx = re.compile(ref["use_pattern"])
+        known = set(ref.get("valid_set", ()))
+        if ref.get("valid_pattern"):  # also accept registrations in THIS not-yet-saved source
+            known |= set(re.findall(ref["valid_pattern"], source))
+        for i, line in enumerate(source.splitlines(), start=1):
+            if line.lstrip().startswith("#"):
                 continue
-            best, best_d = None, 3
-            for k in known:
-                d = _lev(key, k, 2)
-                if d < best_d:
-                    best, best_d = k, d
-                    if d == 1:
-                        break
-            if best_d <= 2:
-                out.append(_f(i, "warn", "unknown-effect-type", f'effect_type &"{key}" is not registered; did you mean &"{best}"?'))
+            for m in use_rx.finditer(line):
+                key = m.group(1)
+                if not key or key in known:
+                    continue
+                best, best_d = None, 3
+                for k in known:
+                    d = _lev(key, k, 2)
+                    if d < best_d:
+                        best, best_d = k, d
+                        if d == 1:
+                            break
+                if best_d <= 2:
+                    out.append(_f(i, "warn", "unknown-catalog-key", f'&"{key}" is not registered; did you mean &"{best}"?'))
     return out
 
 
@@ -269,7 +271,7 @@ def _suppressions(source):
     return sup
 
 
-def lint_source(source: str, path: str = "", valid_effect_types: set | None = None) -> list[dict]:
+def lint_source(source: str, path: str = "", catalog_refs: list | None = None) -> list[dict]:
     findings: list[dict] = []
     fallback = False
     if _HAS_GP:
@@ -283,7 +285,7 @@ def lint_source(source: str, path: str = "", valid_effect_types: set | None = No
         fallback = True
 
     findings += _line_findings(source, path)
-    findings += _catalog_findings(source, valid_effect_types)
+    findings += _catalog_findings(source, catalog_refs)
 
     sup = _suppressions(source)
     findings = [f for f in findings if not (f["line"] in sup and ("*" in sup[f["line"]] or f["rule"] in sup[f["line"]]))]

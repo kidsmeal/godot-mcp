@@ -21,7 +21,7 @@ async def main():
             for name, args in [
                 ("godot_version", {}),
                 ("godot_member", {"class_name": "Tween", "member": "tween_property"}),
-                ("capsule_catalog", {"kind": "damage_types"}),
+                ("project_catalog", {"kind": "damage_types"}),
             ]:
                 res = await session.call_tool(name, args)
                 print(f"\n--- {name}{args} ---")

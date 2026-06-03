@@ -10,12 +10,17 @@ import re
 import shutil
 from pathlib import Path
 
+from godot_mcp import profile
+
 # --- Target project ---------------------------------------------------------
 DEFAULT_PROJECT = r"C:\Users\atk67\Documents\capsulecastle"
 PROJECT_ROOT = Path(os.environ.get("GODOT_PROJECT", DEFAULT_PROJECT))
 
+# --- Per-project profile (drives all project-specific behavior) -------------
+PROFILE = profile.load(PROJECT_ROOT)
+
 # --- Godot binary (on PATH via the ~/bin shim) ------------------------------
-GODOT_BIN = os.environ.get("GODOT_BIN", "godot")
+GODOT_BIN = PROFILE.godot_bin
 
 # --- Grounding data (the dumped extension_api.json) -------------------------
 REPO_ROOT = Path(__file__).resolve().parents[2]

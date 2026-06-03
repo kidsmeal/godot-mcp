@@ -21,7 +21,7 @@ def write_script(res_path: str, content: str, enforce_conventions: bool = False)
     if not res_path.endswith(".gd"):
         return "Refused: path must be a .gd script (res:// path)."
 
-    findings = lint.lint_source(content, res_path, valid_effect_types=catalogs.valid_effect_types())
+    findings = lint.lint_source(content, res_path, catalog_refs=catalogs.build_catalog_refs())
     if enforce_conventions and lint.has_errors(findings):
         return (
             "WRITE BLOCKED (enforce_conventions=True) — convention errors:\n"

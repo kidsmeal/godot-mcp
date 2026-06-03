@@ -15,9 +15,8 @@ from pathlib import Path
 
 from godot_mcp import config
 
-SUITE_SCENE = "res://tests/run_all.tscn"
-INTEGRATION_SCENE = "res://tests/run_integration.tscn"
-VERIFY_ENEMIES = "res://tools/dev_scripts/verify_generated_enemies.gd"
+SUITE_SCENE = config.PROFILE.suite_scene
+INTEGRATION_SCENE = config.PROFILE.integration_scene
 
 _MAINLOOP_RE = re.compile(r"^\s*extends\s+(SceneTree|MainLoop)\b", re.M)
 _EXTENDS_RE = re.compile(r"^\s*extends\s+(\w+)", re.M)
@@ -93,6 +92,8 @@ def _parse_suite(text: str) -> dict:
 
 def run_tests(filter: str = "", integration: bool = False, timeout: int = 300) -> str:
     scene = INTEGRATION_SCENE if integration else SUITE_SCENE
+    if not scene:
+        return f"No {'integration' if integration else 'unit'} test scene configured (set [tests] in godot-mcp.toml)."
     extra = [scene, "--"] + (["--test-filter", filter] if filter else [])
     r = _run(extra, timeout)
     if r["timeout"]:
@@ -147,10 +148,6 @@ def run_script(script_path: str, timeout: int = 120) -> str:
     if len(body) > 4000:
         body = "…(head trimmed)\n" + body[-4000:]
     return f"{status}\n\n{body}"
-
-
-def verify_enemies(timeout: int = 120) -> str:
-    return run_script(VERIFY_ENEMIES, timeout)
 
 
 def check_script(script_path: str, timeout: int = 60) -> str:

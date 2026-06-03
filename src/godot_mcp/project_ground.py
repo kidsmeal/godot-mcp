@@ -13,17 +13,6 @@ from pathlib import Path
 
 from godot_mcp import config
 
-# Friendly name -> path relative to project root.
-DOC_FILES = {
-    "AGENTS": "AGENTS.md",
-    "CLAUDE": "CLAUDE.md",
-    "INDEX": "docs/INDEX.md",
-    "GLOSSARY": "docs/GLOSSARY.md",
-    "ROADMAP": "docs/ROADMAP.md",
-    "HERO_DESIGN_GUIDE": "design/hero_design_guide.md",
-    "NEW_HERO": "heroes/NEW_HERO_INSTRUCTIONS.md",
-}
-
 _HEADING = re.compile(r"^#{1,6}\s")
 _TOP_HEADING = re.compile(r"^#{1,3}\s")
 
@@ -44,7 +33,7 @@ def _sections(text: str) -> list[tuple[str, str]]:
 
 def list_docs() -> str:
     out: list[str] = []
-    for name, rel in DOC_FILES.items():
+    for name, rel in config.PROFILE.docs.items():
         text = config.read_text(config.PROJECT_ROOT / rel)
         if text is None:
             continue
@@ -63,7 +52,7 @@ def convention(topic: str = "") -> str:
         )
     ql = topic.lower()
     hits: list[str] = []
-    for name, rel in DOC_FILES.items():
+    for name, rel in config.PROFILE.docs.items():
         text = config.read_text(config.PROJECT_ROOT / rel)
         if not text:
             continue
@@ -79,7 +68,10 @@ def convention(topic: str = "") -> str:
 
 
 def index() -> str:
-    return config.read_text(config.PROJECT_ROOT / "docs/INDEX.md") or "docs/INDEX.md not found."
+    rel = config.PROFILE.docs.get(config.PROFILE.index_doc)
+    if not rel:
+        return f"No index doc configured (profile index_doc={config.PROFILE.index_doc!r}). Available docs: {', '.join(config.PROFILE.docs) or 'none'}."
+    return config.read_text(config.PROJECT_ROOT / rel) or f"{rel} not found."
 
 
 def find_files(subdir: str = ".", pattern: str = "*", limit: int = 500) -> str:

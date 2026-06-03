@@ -1,8 +1,8 @@
 # godot-grounding MCP
 
 A Model Context Protocol server that grounds an AI agent in **exact, version-pinned
-Godot API** and a **specific project's own conventions** — built for Godot 4.6 and
-tuned to the Capsule Castle project, but pointable at any Godot project.
+Godot API** and a **project's own conventions/catalogs**. Reusable across Godot projects
+via a per-project profile (`godot-mcp.toml`); the included profile targets Capsule Castle.
 
 This is Phases 1–3 + the agent mode of a larger plan (grounding → validate wrappers →
 convention-linted file ops → a `godot-editor` agent mode → optional live editor bridge).
@@ -16,8 +16,8 @@ Generic models hallucinate old Godot APIs (3.x renames, `yield`→`await`,
 keys) that don't exist. This server removes both failure modes by serving:
 
 - **Engine grounding** from `extension_api.json` dumped from *your* engine build.
-- **Project grounding** from the project's `AGENTS.md`, `docs/INDEX.md`, and the
-  catalogs parsed straight out of GDScript source.
+- **Project grounding** from the docs and catalogs declared in the project's
+  `godot-mcp.toml` profile, parsed straight out of source.
 
 ## Tools
 
@@ -27,14 +27,13 @@ keys) that don't exist. This server removes both failure modes by serving:
 | `godot_class(name)` | Full class API: methods, properties, signals, enums, constants |
 | `godot_member(class_name, member)` | One exact signature |
 | `godot_search(query, limit)` | Find classes / `Class.method` by keyword |
-| `capsule_convention(topic)` | Search AGENTS.md / CLAUDE.md / design guides |
-| `capsule_catalog(kind)` | `effect_types`, `sticker_bases`, `damage_types`, `autoloads`, `all` |
-| `capsule_index()` | The codebase map (`docs/INDEX.md`) |
-| `capsule_find_files(subdir, pattern)` | Windows-glob-safe `res://` file listing |
+| `project_convention(topic)` | Search the profile's docs (conventions / design guides) |
+| `project_catalog(kind)` | Catalogs from the profile (e.g. `effect_types`, `damage_types`) + `autoloads`, `all` |
+| `project_index()` | The configured codebase-map doc |
+| `project_find_files(subdir, pattern)` | Windows-glob-safe `res://` file listing |
 | `godot_run_tests(filter, integration)` | Headless test suite → structured pass/fail (files, tests, assertions, failures) |
 | `godot_check(script_path)` | Parse-check one GDScript without running it (`--check-only`) |
-| `godot_run_script(script_path)` | Run a standalone headless dev/validator script |
-| `godot_verify_enemies()` | Run the project's enemy validator script |
+| `godot_run_script(script_path)` | Run a headless SceneTree/MainLoop script (validators/generators) |
 | `godot_lint(script_path)` | Lint one file against AGENTS.md conventions (typing, signals, naming, paths) |
 | `godot_lint_source(source)` | Lint a GDScript string before writing it |
 | `godot_write_script(path, content)` | Write a full file with parse-check + rollback; reports lint |
@@ -48,8 +47,9 @@ refuses writes with convention errors).
 
 The linter runs on gdtoolkit's GDScript AST (multi-line-accurate, with a regex fallback for
 the rare unparseable file), supports `# lint: ignore` / `# lint: ignore=rule,rule`, and
-includes a catalog-aware check that flags `effect_type` keys that look like typos of
-registered ones. Validated at 0 false positives across the 615-file project codebase.
+includes a catalog-aware check that flags catalog keys (per the profile's `lint_catalog_ref`)
+that look like typos of registered ones. Validated at 0 false positives across the 615-file
+Capsule Castle codebase.
 
 ## Setup
 
@@ -68,16 +68,29 @@ the `GODOT_PROJECT` env var.
 
 ## Agent mode
 
-The `agent/` folder ships a **`godot-editor` subagent** + a **`/godot` skill** (with a Codex
-mirror) that wire these 16 tools into one specialized editing loop: **ground → linted edit →
-test-to-confirm**. The subagent grounds every engine API and project value, edits only through
-the linted/parse-checked writer, and won't report done until the relevant headless tests pass.
-See `agent/INSTALL.md` to install into a project.
+A **`godot-editor` subagent** + a **`/godot` skill** (with a Codex mirror) wire these 15 tools
+into one specialized loop: **ground → linted edit → test-to-confirm**. The subagent grounds
+every engine API and project value, edits only through the linted/parse-checked writer, and
+won't report done until the relevant headless tests pass. Sources live in `agent/templates/`;
+`init` renders them (with the project's name/path) into the project's `.claude/` + `.codex/`.
+See `agent/INSTALL.md`.
+
+## Use on another Godot project
+
+```powershell
+$env:PYTHONPATH = ".\src"
+.\.venv\Scripts\python -m godot_mcp.init "C:\path\to\your\project"   # scaffolds godot-mcp.toml + agent files
+```
+
+Then register the server in that project's `.mcp.json` (set `GODOT_PROJECT`), dump its engine
+API, and reconnect. Everything project-specific — name, test scenes, docs, catalogs, linter
+cross-refs — lives in that project's `godot-mcp.toml`.
 
 ## Config (env vars)
 
 | Var | Default |
 |---|---|
 | `GODOT_PROJECT` | `C:\Users\atk67\Documents\capsulecastle` |
-| `GODOT_BIN` | `godot` |
+| `GODOT_BIN` | profile `[engine] godot_bin`, else `godot` |
 | `GODOT_MCP_DATA` | `<repo>\data` |
+| `GODOT_MCP_PROFILE` | `<project>\godot-mcp.toml` |

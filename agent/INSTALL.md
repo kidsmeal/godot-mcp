@@ -1,31 +1,31 @@
 # Installing the Godot agent mode
 
-Canonical, version-controlled copies of the agent-mode pieces live here. Install
-them into the target project (Capsule Castle) so Claude Code / Codex can use them.
+`templates/` holds the source agent-mode files. `python -m godot_mcp.init` renders them
+into a target project (filling in the project name + path) and scaffolds a profile.
 
-## What's here
-| File | Installs to | Purpose |
-|---|---|---|
-| `claude/agents/godot-editor.md` | `<project>/.claude/agents/` | The `godot-editor` subagent |
-| `claude/skills/godot/SKILL.md` | `<project>/.claude/skills/godot/` | The `/godot` skill (Godot mode) |
-| `codex/agents/godot-editor.toml` | `<project>/.codex/agents/` | Codex mirror of the subagent |
-
-## Install (PowerShell, from this repo)
+## Install into a project
 ```powershell
-$P = "C:\Users\atk67\Documents\capsulecastle"
-New-Item -ItemType Directory -Force "$P\.claude\agents","$P\.claude\skills\godot","$P\.codex\agents" | Out-Null
-Copy-Item agent\claude\agents\godot-editor.md      "$P\.claude\agents\"        -Force
-Copy-Item agent\claude\skills\godot\SKILL.md       "$P\.claude\skills\godot\"   -Force
-Copy-Item agent\codex\agents\godot-editor.toml     "$P\.codex\agents\"          -Force
+$env:PYTHONPATH = "C:\Users\atk67\Documents\godot-mcp\src"
+& C:\Users\atk67\Documents\godot-mcp\.venv\Scripts\python.exe -m godot_mcp.init "C:\path\to\your\godot\project"
 ```
 
-## After installing
-1. Reload Claude Code in the project (or `/mcp` reconnect) so it picks up the new
-   subagent + skill.
-2. The agent mode depends on the `godot-grounding` MCP server being registered
-   (`.mcp.json`) and connected.
-3. Try it: `/godot` then a task, or ask Claude to "use the godot-editor subagent to …".
+This writes (idempotently — an existing `godot-mcp.toml` is kept):
+| File | Purpose |
+|---|---|
+| `<project>/godot-mcp.toml` | The profile (name, tests, docs, catalogs, lint refs) |
+| `<project>/.claude/agents/godot-editor.md` | The `godot-editor` subagent |
+| `<project>/.claude/skills/godot/SKILL.md` | The `/godot` skill |
+| `<project>/.codex/agents/godot-editor.toml` | Codex mirror of the subagent |
 
-## Prerequisites
-- `godot-grounding` MCP server registered and connected (see the repo README).
-- `godot` on PATH and `data/extension_api.json` dumped (`scripts/dump_api.ps1`).
+## After installing
+1. Register the `godot-grounding` MCP server in `<project>/.mcp.json` (set `GODOT_PROJECT`
+   to the project path). See the repo `.mcp.json.example`.
+2. Dump the engine API for the project's Godot version: `scripts/dump_api.ps1`
+   (needs `godot` on PATH).
+3. Reload Claude Code / `/mcp` reconnect, then `/godot` or invoke the `godot-editor` subagent.
+
+## Tuning
+Everything project-specific lives in `<project>/godot-mcp.toml` — edit it to declare your
+test scenes, the docs `project_convention` exposes, the catalogs `project_catalog` parses,
+and the linter's catalog typo cross-references. The agent text itself is generic; re-run
+`init` after changing the project name to re-render it.
