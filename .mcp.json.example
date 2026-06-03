@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "godot-grounding": {
+      "command": "C:\\Users\\atk67\\Documents\\godot-mcp\\.venv\\Scripts\\python.exe",
+      "args": ["C:\\Users\\atk67\\Documents\\godot-mcp\\main.py"],
+      "env": {
+        "GODOT_PROJECT": "C:\\Users\\atk67\\Documents\\capsulecastle",
+        "GODOT_BIN": "godot"
+      }
+    }
+  }
+}
