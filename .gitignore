@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 .DS_Store
+.claude/
 
 # Generated, engine-version-specific API dump.
 # Regenerate locally with: scripts/dump_api.ps1  (or godot --headless --dump-extension-api)

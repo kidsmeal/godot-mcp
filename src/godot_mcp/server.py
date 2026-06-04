@@ -107,6 +107,10 @@ def godot_lint_scene(scene_path: str) -> str:
     """Lint a .tscn for silent breakage: ext_resource paths that don't exist,
     .godot/imported references, and type-as-name nodes (e.g. a node literally named
     'Area2D'). scene_path is a res:// path."""
+    try:
+        config.resolve_project_path(scene_path)
+    except config.PathEscapeError:
+        return f"Refused: {scene_path} resolves outside the project root."
     return lint.format_findings(scene.lint_scene(scene_path))
 
 
@@ -127,7 +131,11 @@ def godot_lint(script_path: str) -> str:
     (var/param/return), past-tense signals (no on_ prefix), PascalCase class_name,
     ALL_CAPS consts, snake_case funcs, no .godot/imported refs, plus profile catalog
     typo checks. Pure read — does not modify the file."""
-    src = config.read_text(edit._abs(script_path))
+    try:
+        target = config.resolve_project_path(script_path)
+    except config.PathEscapeError:
+        return f"Refused: {script_path} resolves outside the project root."
+    src = config.read_text(target)
     if src is None:
         return f"Not found: {script_path}"
     return lint.format_findings(lint.lint_source(src, script_path, catalog_refs=catalogs.build_catalog_refs()))
@@ -222,6 +230,10 @@ def godot_editor_scene_tree() -> str:
 @mcp.tool()
 def godot_open_scene(scene_path: str) -> str:
     """Open a scene (res:// path) in the Godot editor via the editor bridge addon."""
+    try:
+        config.resolve_project_path(scene_path)
+    except config.PathEscapeError:
+        return f"Refused: {scene_path} resolves outside the project root."
     return bridge.open_scene(scene_path)
 
 

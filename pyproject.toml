@@ -11,3 +11,6 @@ Homepage = "https://github.com/kidsmeal/godot-mcp"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

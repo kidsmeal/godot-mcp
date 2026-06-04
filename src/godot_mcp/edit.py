@@ -8,7 +8,6 @@ but enforce_conventions=True will refuse a write that has convention errors.
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from godot_mcp import catalogs, config, lint, runner
 
@@ -16,14 +15,14 @@ _UNTYPED_VAR = re.compile(r"^(\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:static\s+)?var\s+\
 _FUNC_NO_RET = re.compile(r"^(\s*)((?:@\w+(?:\([^)]*\))?\s+)*(?:static\s+)?func\s+\w+\s*\(.*?\))\s*:\s*$")
 
 
-def _abs(res_path: str) -> Path:
-    rel = res_path[len("res://"):] if res_path.startswith("res://") else res_path
-    return config.PROJECT_ROOT / rel
-
-
 def write_script(res_path: str, content: str, enforce_conventions: bool = False) -> str:
     if not res_path.endswith(".gd"):
         return "Refused: path must be a .gd script (res:// path)."
+
+    try:
+        target = config.resolve_project_path(res_path)
+    except config.PathEscapeError:
+        return f"Refused: {res_path} resolves outside the project root."
 
     findings = lint.lint_source(content, res_path, catalog_refs=catalogs.build_catalog_refs())
     if enforce_conventions and lint.has_errors(findings):
@@ -33,11 +32,6 @@ def write_script(res_path: str, content: str, enforce_conventions: bool = False)
             + "\n\nNothing written."
         )
 
-    target = _abs(res_path)
-    try:
-        target.resolve().relative_to(config.PROJECT_ROOT.resolve())
-    except ValueError:
-        return "Refused: resolved path escapes the project root."
     existed = target.exists()
     backup = target.read_bytes() if existed else None
 
@@ -61,7 +55,10 @@ def write_script(res_path: str, content: str, enforce_conventions: bool = False)
 
 
 def patch_script(res_path: str, old_string: str, new_string: str, enforce_conventions: bool = False) -> str:
-    target = _abs(res_path)
+    try:
+        target = config.resolve_project_path(res_path)
+    except config.PathEscapeError:
+        return f"Refused: {res_path} resolves outside the project root."
     if not target.exists():
         return f"Not found: {res_path}"
     text = target.read_text(encoding="utf-8")
@@ -79,7 +76,11 @@ def auto_fix(res_path: str) -> str:
     to functions with no value-returning `return`."""
     if not res_path.endswith(".gd"):
         return "Refused: path must be a .gd script."
-    text = config.read_text(_abs(res_path))
+    try:
+        target = config.resolve_project_path(res_path)
+    except config.PathEscapeError:
+        return f"Refused: {res_path} resolves outside the project root."
+    text = config.read_text(target)
     if text is None:
         return f"Not found: {res_path}"
     lines = text.splitlines()

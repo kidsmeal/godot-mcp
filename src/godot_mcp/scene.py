@@ -9,7 +9,6 @@ ext_resource paths, .godot/imported refs, type-as-name nodes).
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 from godot_mcp import config
 
@@ -17,11 +16,6 @@ _SECTION = re.compile(r"^\[(\w+)(.*)\]\s*$")
 _ATTR = re.compile(r'(\w+)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s\]]+)')
 _PROP = re.compile(r"^([A-Za-z_]\w*)\s*=\s*(.+)$")
 _EXTREF = re.compile(r'ExtResource\("([^"]+)"\)')
-
-
-def _abs(res_path: str) -> Path:
-    rel = res_path[len("res://"):] if res_path.startswith("res://") else res_path
-    return config.PROJECT_ROOT / rel
 
 
 def _unq(v: str) -> str:
@@ -56,7 +50,11 @@ def _depth(parent: str | None) -> int:
 
 
 def describe(scene_path: str) -> str:
-    text = config.read_text(_abs(scene_path))
+    try:
+        target = config.resolve_project_path(scene_path)
+    except config.PathEscapeError:
+        return f"Refused: {scene_path} resolves outside the project root."
+    text = config.read_text(target)
     if text is None:
         return f"Not found: {scene_path}"
     if not scene_path.endswith(".tscn"):
@@ -104,7 +102,12 @@ def describe(scene_path: str) -> str:
 
 
 def lint_scene(scene_path: str) -> list[dict]:
-    text = config.read_text(_abs(scene_path))
+    try:
+        target = config.resolve_project_path(scene_path)
+    except config.PathEscapeError:
+        return [{"line": 0, "severity": "error", "rule": "path-escape",
+                 "message": f"Refused: {scene_path} resolves outside the project root."}]
+    text = config.read_text(target)
     if text is None:
         return [{"line": 0, "severity": "error", "rule": "not-found", "message": f"{scene_path} not found"}]
     out: list[dict] = []

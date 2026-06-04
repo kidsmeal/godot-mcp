@@ -22,11 +22,6 @@ _MAINLOOP_RE = re.compile(r"^\s*extends\s+(SceneTree|MainLoop)\b", re.M)
 _EXTENDS_RE = re.compile(r"^\s*extends\s+(\w+)", re.M)
 
 
-def _res_to_abs(res_path: str):
-    rel = res_path[len("res://"):] if res_path.startswith("res://") else res_path
-    return config.PROJECT_ROOT / rel
-
-
 def _run(extra_args: list[str], timeout: int) -> dict:
     """Launch Godot headless, capturing output via --log-file. Returns
     {rc, out, err, timeout}. rc is the process exit code (None if it never exited)."""
@@ -133,7 +128,11 @@ def run_script(script_path: str, timeout: int = 120) -> str:
     # Guard: the GUI Godot build pops a BLOCKING modal OS alert when --script targets
     # a script that isn't a SceneTree/MainLoop (or fails to load), which can hang the
     # run until the subprocess timeout. Refuse those up front.
-    src = config.read_text(_res_to_abs(script_path))
+    try:
+        abs_path = config.resolve_project_path(script_path)
+    except config.PathEscapeError:
+        return f"Refused: {script_path} resolves outside the project root."
+    src = config.read_text(abs_path)
     if src is None:
         return f"Not found: {script_path}"
     if not _MAINLOOP_RE.search(src):
@@ -157,6 +156,10 @@ def run_script(script_path: str, timeout: int = 120) -> str:
 
 
 def check_script(script_path: str, timeout: int = 60) -> str:
+    try:
+        config.resolve_project_path(script_path)
+    except config.PathEscapeError:
+        return f"Refused: {script_path} resolves outside the project root."
     r = _run(["--check-only", "--script", script_path], timeout)
     if r["timeout"]:
         return f"TIMED OUT after {timeout}s."
