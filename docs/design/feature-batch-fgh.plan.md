@@ -1,0 +1,117 @@
+# Plan (revised): correctness/containment hardening + Feature Batch F–H
+
+Status: **active plan — revised 2026-06-03 after a live-probe review.**
+Supersedes the first planner draft, which assumed Phase 0 containment was "mostly done." A manual probe proved otherwise (outside-project `godot_lint` / `godot_check` / `godot_run_script` / `godot_lint_scene` all succeeded), and surfaced engine-grounding and profile bugs the F–H design never covered. **Correctness and containment move ahead of features; Phase H is gated behind its safety prerequisites.**
+
+Design references: `docs/design/feature-batch-fgh.md` (F/G/H feature design, reviewed) and `docs/design/probe-leak-hardening.md` (probe/validation leak investigation — folded in here as Phase 1B). This plan adds a hardening/correctness track in front of the features.
+
+Conventions: no `CLAUDE.md`/`CONVENTIONS.md` exist; match the surrounding source. Every MCP tool is a thin `@mcp.tool()` wrapper in `server.py` delegating to a module fn that graceful-degrades (returns a string, never raises to the agent); path handling routes through `config`.
+
+---
+
+## Findings register (from the live-probe review)
+
+| ID | Pri | Finding | Evidence | Fix lands in |
+|---|---|---|---|---|
+| F-1 | **P0** | Containment broken across **read/run** tools: `godot_lint` reads via `edit._abs`; `project_scene`/`godot_lint_scene` via `scene._abs`; `godot_check`/`godot_run_script` hand caller input straight to Godot. Confirmed live on an absolute outside-project path. | server.py:130, scene.py:59, runner.py:159 | Phase 1 |
+| F-2 | **P1** | Edit path **leaks outside-project content before refusing**: `patch_script` reads the target before the protected writer; `auto_fix` reads before any check. No write, but reveals existence/content. | edit.py:63, edit.py:82 | Phase 1 |
+| F-3 | P2 | Bridge **path-taking tools bypass the resolver**: `godot_open_scene` forwards raw input into `EditorInterface.open_scene_from_path`. | server.py:226 → bridge.py:67 → bridge.gd:79 | Phase 1 |
+| F-4 | **P1** | Engine grounding **false negatives for inherited members**: `godot_member("Sprite2D","add_child")` → "No member" (valid via Node). Lookup scans only the exact class. | engine_api.py:155 | Phase 2 |
+| F-5 | **P1** | `godot_search` **ignores built-in classes** (and singletons): `godot_search("from_hsv")` finds nothing though `Color.from_hsv` exists. Loops only `idx["classes"]`. | engine_api.py:207 | Phase 2 |
+| F-6 | **P1** | **Broken profiles silently degrade to defaults**: a malformed `godot-mcp.toml` is swallowed to `{}`, and `doctor` still reports a normal profile (`add(True, …)`) + "All good." Catalogs/tests/docs vanish invisibly. | profile.py:50, doctor.py:58 | Phase 3 |
+| F-7 | P2 | **Profile catalog validation brittle**: `_specs`/`_parse`/`build_catalog_refs` assume `name/file/pattern/use_pattern/valid_pattern` exist; a bad profile crashes a tool instead of producing a doctor error. | catalogs.py:25, catalogs.py:100 | Phase 3 |
+| F-8 | P2 | **Bridge protocol too naive for larger payloads**: addon parses each available TCP chunk as whole JSON; TCP has no message boundaries, so `set_property`/`screenshot` will eventually split. Needs per-client buffers + framing. | bridge.gd:51 | Phase 6 |
+| F-9 | P2 | **Verification too weak for a safety tool**: no `tests/`; CI runs only `ci_smoke.py`, whose tool-count assertion (`len(names) >= 15`) is loose and missed every containment bug. | ci_smoke.py:32 | Phases 1 & 4 |
+| F-10 | P3 | **Worktree hygiene**: `.claude/settings.local.json` untracked w/ broad perms and not git-ignored; gantry-init placeholder docs still contain `<DATE>`/`<path>`. | repo root | Housekeeping |
+| F-11 | **P1** | **Plugin leaked temp probe/validation scripts into the TRACKED game-project root** (`__validate_tmp.gd`, `__broken_*.gd` — one intentionally uncompilable). Root cause: no sanctioned way to run a plugin-owned `SceneTree` validator or hold broken-linter fixtures, so they get hand-copied into the project. `data/validate_script.gd` is the legitimate harness source (untracked). | `docs/design/probe-leak-hardening.md` | Phase 1B |
+
+---
+
+## Revised phase order
+
+Each phase: tests-first where the harness exists, ends green (`pytest`; + `ruff`/`mypy` from Phase 4 on), stops for human commit. Never advance without a committed prior phase.
+
+### Phase 1 — Containment, for real + regression tests  *(F-1, F-2, F-3, partial F-9)*
+The urgent one — the fix the whole batch waits on.
+- Delete the private `_abs` / `_res_to_abs` helpers in `edit.py`, `scene.py`, `runner.py`; route **every** file-taking path through `config.resolve_project_path`, **refusing before any read or Godot launch**. Replace `write_script`'s inline duplicate check too.
+- Cover the confirmed sites: `godot_lint` (server.py:130), `project_scene`/`godot_lint_scene` (scene.py:59), `godot_check`/`godot_run_script` (runner.py:159), **`patch_script` read-before-refuse** (edit.py:63), **`auto_fix`** (edit.py:82), and **`godot_open_scene`** res:// validation before the bridge send.
+- Stand up **minimal pytest** (`tests/`, `[tool.pytest.ini_options]` `pythonpath=["src"]`) — just enough to write the regression suite. (ruff/mypy formalization is Phase 4.)
+- **Containment regression tests** for ALL of: `godot_lint`, `project_scene`, `godot_lint_scene`, `godot_check`, `godot_run_script`, `godot_write_script`, `godot_patch_script`, `godot_fix_script`, `godot_open_scene` — each fed `..`-escape / absolute / symlink-escape, asserting the identical "Refused" shape with no read/launch. **Red before the fix, green after.**
+- **Exit:** one containment implementation; every path-taking tool refuses escapes identically; the probe cases that were RED are now GREEN-covered.
+
+### Phase 1B — Probe/validation harness hardening  *(F-11)* — root-cause fix for the probe leak
+Full investigation: `docs/design/probe-leak-hardening.md`. The plugin has no sanctioned way to run a plugin-owned `SceneTree` validator against the project, so the harness + broken-linter fixtures got hand-copied into the tracked capsulecastle root and leaked. Experiment confirmed: a harness in the plugin's own `data/` launched by **absolute** `--script` path with `--path <project>` loads the project and registers autoloads with **zero project-root writes**.
+- **Track the harness:** `git add data/validate_script.gd` (currently untracked). It runs by absolute path from `config.DATA_DIR` — identical every call, outside the project, zero leak surface. *(Supersedes the earlier "stray file — delete" note in housekeeping.)*
+- **`runner.validate_with_autoloads(script_path, timeout=60)`** — contain `script_path` via `resolve_project_path`, launch `data/validate_script.gd` by abs path with the target as `--` arg, decide pass/fail by scanning the engine log (exit code is unreliable for this harness — lock the failure markers: `Parse Error`, `SCRIPT ERROR`, `Compile Error`, `not declared`, `Could not find/load`, against the pinned build).
+- **`runner.run_temp_probe(source, user_args, timeout)`** — for genuinely per-call generated probes, `mkstemp(suffix=".gd", prefix="godot_mcp_probe_")`, run by abs path, `_safe_unlink` the file **and its `.gd.uid`** in a `finally` (mirrors the existing `--log-file` cleanup). **Prerequisite reused by Phase 5 (`project_setting(resolve=True)`) and Phase 7 — build it once here.**
+- **Sanctioned tool `godot_validate(script_path, timeout=60)`** in `server.py` → `validate_with_autoloads`, so agents never copy a harness into a project again (the actual root-cause fix). Grant ripple: 3 templates + README (cross-cutting).
+- **Fixtures → `tests/fixtures/`** in the plugin repo (safe there — no full-project headless parse): `broken_syntax.gd` (uncompilable) + `broken_after_autoload.gd` (undeclared identifier), with a README marking them deliberate negatives. Rides the minimal pytest from Phase 1.
+- **`.gitignore` backstop:** add `__*.gd` to the plugin `.gitignore`. The same backstop in the *capsulecastle* repo is a separate cross-repo change (note it — can't be committed from this repo).
+- **Exit:** `godot_validate` validates an in-project script via the plugin-owned harness; `run_temp_probe` leaves nothing behind on success OR crash (finally-cleanup tested); fixtures live in the plugin; no `__*.gd` can reach the game root.
+
+### Phase 2 — Engine grounding correctness  *(F-4, F-5)*
+- `godot_member`: resolve **inherited** members by walking the `inherits` chain (`idx["ci"]` → record → `inherits` → …), scanning each ancestor; label which class a member is inherited from.
+- `godot_class(name, include_inherited=False)`: optional flattened view including inherited members.
+- `godot_search`: include `idx["builtins"]` **and** singletons, not just `idx["classes"]`.
+- **Tests:** `Sprite2D.add_child` resolves (inherited from Node); `godot_search("from_hsv")` finds `Color.from_hsv`; `Vector2.snapped` searchable.
+- **Exit:** inherited + built-in lookups correct; tests green.
+
+### Phase 3 — Profile robustness  *(F-6, F-7)*
+- `profile.load`: distinguish "no file" from "present but unparseable / schema-invalid." Record an explicit error state (don't silently fall to `{}`).
+- `catalogs`: validate each spec has its required keys; a bad spec → clean doctor error, **not** a tool crash.
+- `doctor.report`: surface profile parse/schema errors as a **FAIL** — a malformed toml can never coexist with "All good."
+- **Tests:** malformed `godot-mcp.toml` → doctor FAIL; catalog spec missing `pattern` → doctor error, tools don't raise.
+- **Exit:** broken profiles are loud, not silent; tests green.
+
+### Phase 4 — Toolchain formalization + CI  *(F-9)*
+Now that real coverage exists, formalize around it.
+- Add `[tool.ruff]` + `[tool.mypy]` (pragmatic: target `src/godot_mcp`, `ignore_missing_imports`, not `--strict`) + a `dev` optional-deps group; green baseline.
+- Wire `pytest` + `ruff check` + `mypy` into CI **alongside** the untouched Godot-gated `ci_smoke.py`.
+- Strengthen `ci_smoke.py`'s loose `len(names) >= 15` into an **exact expected-tool-set** assertion so a dropped/renamed tool fails CI.
+- **Exit:** `pytest`/`ruff`/`mypy` green locally + CI; ci_smoke asserts the real roster.
+
+### Phase 5 — Feature F: grounding surfaces
+- `project_input_actions()` — parse `[input]` (`re.S`); **hardcode the standard `ui_*` set**; built-in **typo-lint** rule (hardcoded `use_pattern`, threaded through `lint_source` so it fires on the write path).
+- `project_setting(name, resolve=False)` — file parse + optional headless resolve.
+- `project_classes()` — `class_name → res://` scan, `_gd_signature` cached.
+- **`project_layers()`** — named 2D/3D physics + render layers from `project.godot` (same parse family; flagged high-value in review).
+- Grant lists (×3) + README updated for every new tool.
+- **Exit:** each tool correct on fixtures; lint fires on the write path; no new profile keys.
+
+### Phase 6 — Bridge hardening  *(F-8)* — prerequisite for G/H
+- **Per-client receive buffers + newline-framed reassembly** in `bridge.gd` (replace parse-each-chunk) so multi-packet commands/responses survive.
+- Distinct **`protocol`/`bridge_version`** field in `ping` (not overloading the engine `version`) + a **`doctor` bridge-version check**.
+- Resolver-validation pattern documented for all new path-taking bridge cmds.
+- **Exit:** a >MTU command round-trips intact; `doctor` reports the bridge protocol version / mismatch.
+
+### Phase 7 — Feature G: runtime loop
+- `godot_run_game_headless` — **first task: empirically verify `--quit-after` exit-code behavior**; verdict = exit code AND clean parsed log.
+- `godot_screenshot` — editor viewport, temp-file-path transport (safe over the buffered protocol).
+- **`godot_validate_scene_load(scene_path)`** — headless "does this `.tscn` instantiate?" check; standalone value **and reused as Phase 8's reload-check**.
+- Binary-gated tests (skip/xfail without Godot).
+- **Exit:** verdict locked only after the `--quit-after` check; screenshot returns image + degrades gracefully.
+
+### Phase 8 — Feature H: scene authoring  *(gated)*
+**Do not start until Phases 1, 6, and `godot_validate_scene_load` (Phase 7) are committed** — without containment, tests, bridge versioning/framing, and a real reload-check, scene mutation is "a loaded nail gun."
+- First decision (design left implicit): editor **currently playing a scene → refuse vs stop-first** — pick one.
+- 5 cmds (`save_scene` exposure + `add_node`/`set_property`/`attach_script`/`connect_signal`) via `EditorInterface` + `EditorUndoRedoManager`, save, reload-check, rollback via `undo()` + re-save.
+- Editor-gated tests; **provable rollback** test (failed reload-check ⇒ `project_scene` shows the scene unchanged).
+- **Exit:** all five persist on success and **provably roll back** on failure.
+
+---
+
+## Backlog (post-batch, not yet planned)
+- **`godot_lookup`** — one unified lookup across engine classes, **inherited** APIs, project `class_name`s, autoloads, and input actions. Natural successor once Phases 2 + 5 land (it composes their fixes).
+- **`godot_format_script`** — full `gdformat` pass through the parse-checked/rollback writer.
+- Batch scene mutations (amortize the per-mutation Godot launch cost flagged in review).
+
+## Housekeeping  *(F-10 — fold into Phase 1's commit or a quick chore)*
+- `.gitignore`: add `.claude/` (the untracked `settings.local.json` carries broad local perms) and `__*.gd` (probe backstop, F-11).
+- `docs/CURRENTNESS_AUDIT.md` + `docs/RUNTIME_VERIFICATION_QUEUE.md`: fill `<DATE>`/`<path>` placeholders or remove until first real use.
+- **`data/validate_script.gd`: do NOT delete — it's the legitimate validator harness (F-11); it gets *tracked* and wired in Phase 1B.**
+
+## Cross-cutting concerns (carried across phases)
+- **Agent grant lists** — every new tool must be added to `godot-editor.md.tmpl` frontmatter, `godot-editor.toml.tmpl` prose, and the `SKILL.md.tmpl` table, or the subagent can't call it.
+- **README** — Tools + Live-editor-bridge tables per new tool.
+- **TEMP-project isolation** — all tests set `GODOT_PROJECT` to a temp dir before importing `config`; never touch capsulecastle.
+- **Verdict baseline** — Green today: `ci_smoke.py`, `client_check.py`, `smoke_phase2.py`, `smoke_phase3.py`. Red by probe (the Phase-1 target): outside-project `godot_lint`/`godot_check`/`godot_run_script`/`godot_lint_scene`/`patch_script`/`auto_fix`.
