@@ -50,9 +50,9 @@ keys) that don't exist. This server removes both failure modes by serving:
 |---|---|
 | `godot_version` | Engine version the API is pinned to + project features |
 | `godot_doctor` | Health check: API dump/version, Godot binary, gdtoolkit, profile paths |
-| `godot_class(name)` | Full class API **+ doc descriptions**: methods, properties, signals, enums, constants |
-| `godot_member(class_name, member)` | One exact signature **+ its doc description** |
-| `godot_search(query, limit)` | Find classes / `Class.method` by keyword |
+| `godot_class(name, include_inherited)` | Full class API **+ doc descriptions**: methods, properties, signals, enums, constants. `include_inherited=True` also lists members from base classes |
+| `godot_member(class_name, member)` | One exact signature **+ its doc description**; resolves **inherited** members (walks the base-class chain, labels the origin) |
+| `godot_search(query, limit)` | Find classes, built-ins (e.g. `Color.from_hsv`), singletons, and `Class.method` by keyword |
 | `project_convention(topic)` | Search the profile's docs (conventions / design guides) |
 | `project_catalog(kind)` | Catalogs from the profile (e.g. `effect_types`, `damage_types`) + `autoloads`, `all` |
 | `project_index()` | The configured codebase-map doc |

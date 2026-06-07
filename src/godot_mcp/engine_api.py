@@ -85,7 +85,34 @@ def _format_method(m: dict[str, Any]) -> str:
     return sig + (f"   [{', '.join(flags)}]" if flags else "")
 
 
-def get_class(name: str) -> str:
+def _walk_inherits(
+    class_name: str, classes: dict[str, Any]
+) -> list[tuple[str, dict[str, Any]]]:
+    """Return a list of (ancestor_name, record) walking up the inherits chain.
+
+    Stops when a parent is not found in ``classes`` or a cycle is detected.
+    The starting class itself is NOT included.
+    """
+    seen: set[str] = {class_name}
+    result: list[tuple[str, dict[str, Any]]] = []
+    current = class_name
+    while True:
+        rec = classes.get(current)
+        if rec is None:
+            break
+        parent = rec.get("inherits")
+        if not parent or parent in seen:
+            break
+        parent_rec = classes.get(parent)
+        if parent_rec is None:
+            break
+        seen.add(parent)
+        result.append((parent, parent_rec))
+        current = parent
+    return result
+
+
+def get_class(name: str, include_inherited: bool = False) -> str:
     idx = _load()
     if idx.get("_missing"):
         return _missing_msg()
@@ -149,7 +176,74 @@ def get_class(name: str) -> str:
         lines.append("\nConstants:")
         lines.extend(f'  {k["name"]} = {k.get("value")}' for k in consts)
 
+    if include_inherited and real in idx["classes"]:
+        # Collect own member names to avoid duplicating them
+        own_names: set[str] = set()
+        for m in c.get("methods") or []:
+            own_names.add(m["name"])
+        for p in c.get("properties") or c.get("members") or []:
+            own_names.add(p["name"])
+        for s in c.get("signals") or []:
+            own_names.add(s["name"])
+
+        ancestors = _walk_inherits(real, idx["classes"])
+        inh_lines: list[str] = []
+        for origin, arec in ancestors:
+            add = docs.class_docs(origin)
+            for m in arec.get("methods") or []:
+                if m["name"] not in own_names:
+                    own_names.add(m["name"])
+                    line = f'  {_format_method(m)}   [from {origin}]'
+                    if add and add["methods"].get(m["name"]):
+                        line += "   — " + _trunc(add["methods"][m["name"]], 80)
+                    inh_lines.append(line)
+            for p in arec.get("properties") or []:
+                if p["name"] not in own_names:
+                    own_names.add(p["name"])
+                    inh_lines.append(
+                        f'  {p["name"]}: {_pretty_type(p.get("type"))}   [property, from {origin}]'
+                    )
+            for s in arec.get("signals") or []:
+                if s["name"] not in own_names:
+                    own_names.add(s["name"])
+                    a = ", ".join(
+                        f'{x["name"]}: {_pretty_type(x.get("type"))}' for x in s.get("arguments", [])
+                    )
+                    inh_lines.append(f'  signal {s["name"]}({a})   [from {origin}]')
+
+        if inh_lines:
+            lines.append("\nInherited members:")
+            lines.extend(inh_lines)
+
     return "\n".join(lines)
+
+
+def _scan_record_for_member(c: dict[str, Any], ml: str) -> list[str]:
+    """Scan a single class/builtin record for member ``ml`` (lowercased).
+
+    Returns a list of formatted hit strings (empty if nothing matched).
+    """
+    hits: list[str] = []
+    for m in c.get("methods") or []:
+        if m["name"].lower() == ml:
+            hits.append(_format_method(m))
+    for p in c.get("properties") or c.get("members") or []:
+        if p["name"].lower() == ml:
+            hits.append(
+                f'property {p["name"]}: {_pretty_type(p.get("type"))} '
+                f'(get {p.get("getter")}, set {p.get("setter")})'
+            )
+    for s in c.get("signals") or []:
+        if s["name"].lower() == ml:
+            a = ", ".join(f'{x["name"]}: {_pretty_type(x.get("type"))}' for x in s.get("arguments", []))
+            hits.append(f'signal {s["name"]}({a})')
+    for e in c.get("enums") or []:
+        if e["name"].lower() == ml:
+            hits.append(f'enum {e["name"]}: ' + ", ".join(f'{v["name"]}={v["value"]}' for v in e.get("values", [])))
+    for k in c.get("constants") or []:
+        if k["name"].lower() == ml:
+            hits.append(f'const {k["name"]} = {k.get("value")}')
+    return hits
 
 
 def get_member(class_name: str, member: str) -> str:
@@ -161,36 +255,34 @@ def get_member(class_name: str, member: str) -> str:
         return f'Class "{class_name}" not found. Try godot_search("{class_name}").'
     c = idx["classes"].get(real) or idx["builtins"].get(real)
     ml = member.lower()
-    out: list[str] = []
 
-    for m in c.get("methods", []):
-        if m["name"].lower() == ml:
-            out.append(_format_method(m))
-    for p in c.get("properties") or c.get("members") or []:
-        if p["name"].lower() == ml:
-            out.append(
-                f'property {p["name"]}: {_pretty_type(p.get("type"))} '
-                f'(get {p.get("getter")}, set {p.get("setter")})'
-            )
-    for s in c.get("signals", []):
-        if s["name"].lower() == ml:
-            a = ", ".join(f'{x["name"]}: {_pretty_type(x.get("type"))}' for x in s.get("arguments", []))
-            out.append(f'signal {s["name"]}({a})')
-    for e in c.get("enums", []):
-        if e["name"].lower() == ml:
-            out.append(f'enum {e["name"]}: ' + ", ".join(f'{v["name"]}={v["value"]}' for v in e.get("values", [])))
-    for k in c.get("constants", []):
-        if k["name"].lower() == ml:
-            out.append(f'const {k["name"]} = {k.get("value")}')
+    out = _scan_record_for_member(c, ml)
+
+    # Inherited resolution: walk the ancestor chain for engine classes only.
+    # Built-ins have no inherits field — skip the walk for them.
+    origin: str | None = None
+    if not out and real in idx["classes"]:
+        for ancestor_name, ancestor_rec in _walk_inherits(real, idx["classes"]):
+            hits = _scan_record_for_member(ancestor_rec, ml)
+            if hits:
+                out = hits
+                origin = ancestor_name
+                break
 
     if not out:
         return f'No member "{member}" on {real}. Use godot_class("{real}") to list members.'
-    result = f"{real}.{member}:\n" + "\n".join("  " + o for o in out)
-    dd = docs.class_docs(real)
+
+    label = f"{real}.{member}"
+    if origin:
+        label += f"  (inherited from {origin})"
+    result = f"{label}:\n" + "\n".join("  " + o for o in out)
+
+    # Fetch doc description from the origin class when inherited, else from real.
+    doc_class = origin if origin else real
+    dd = docs.class_docs(doc_class)
     if dd:
-        ml2 = member.lower()
         for bucket in ("methods", "members", "signals", "constants"):
-            desc = next((v for k, v in dd[bucket].items() if k.lower() == ml2 and v), "")
+            desc = next((v for k, v in dd[bucket].items() if k.lower() == ml and v), "")
             if desc:
                 result += "\n\n" + _trunc(desc, 700)
                 break
@@ -204,20 +296,55 @@ def search(query: str, limit: int = 25) -> str:
     q = query.lower()
     cls_hits: list[tuple[int, str]] = []
     member_hits: list[str] = []
+
+    singleton_names = set(idx["singletons"])
+
+    # Engine classes
     for name, c in idx["classes"].items():
         nl = name.lower()
         if q in nl:
             score = 0 if nl == q else (1 if nl.startswith(q) else 2)
-            cls_hits.append((score, name))
-        for m in c.get("methods", []):
+            # Most singletons share their class name — tag the class row instead of
+            # emitting a separate one (avoids a duplicate entry that eats into `limit`).
+            label = f"{name} [singleton]" if name in singleton_names else name
+            cls_hits.append((score, label))
+        for m in c.get("methods") or []:
             if q in m["name"].lower():
                 member_hits.append(f'{name}.{m["name"]}()')
-        for s in c.get("signals", []):
+        for s in c.get("signals") or []:
             if q in s["name"].lower():
                 member_hits.append(f'{name}.{s["name"]} [signal]')
         for p in c.get("properties") or []:
             if q in p["name"].lower():
                 member_hits.append(f'{name}.{p["name"]} [property]')
+
+    # Built-in types (Color, Vector2, …)
+    for name, c in idx["builtins"].items():
+        nl = name.lower()
+        if q in nl:
+            score = 0 if nl == q else (1 if nl.startswith(q) else 2)
+            cls_hits.append((score, name))
+        for m in c.get("methods") or []:
+            if q in m["name"].lower():
+                member_hits.append(f'{name}.{m["name"]}()')
+        for mem in c.get("members") or []:
+            if q in mem["name"].lower():
+                member_hits.append(f'{name}.{mem["name"]} [property]')
+        for con in c.get("constants") or []:
+            if q in con["name"].lower():
+                member_hits.append(f'{name}.{con["name"]} [constant]')
+
+    # Singletons whose name is NOT also a class (those are tagged on the class row
+    # above). Covers the rare case of a singleton exposed under a different name.
+    for sname, s in idx["singletons"].items():
+        if sname in idx["classes"]:
+            continue
+        nl = sname.lower()
+        if q in nl:
+            score = 0 if nl == q else (1 if nl.startswith(q) else 2)
+            label = sname if s.get("type") == sname else f'{sname} ({s.get("type")})'
+            cls_hits.append((score, f'{label} [singleton]'))
+
     cls_hits.sort()
     results = [n for _, n in cls_hits] + member_hits
     if not results:

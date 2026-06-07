@@ -41,11 +41,13 @@ def godot_doctor() -> str:
 
 
 @mcp.tool()
-def godot_class(name: str) -> str:
+def godot_class(name: str, include_inherited: bool = False) -> str:
     """Exact API for a Godot engine class at the project's pinned version:
     inheritance, methods (full signatures), properties, signals, enums, constants.
-    Consult this BEFORE calling any engine API to avoid hallucinated/renamed members."""
-    return engine_api.get_class(name)
+    Consult this BEFORE calling any engine API to avoid hallucinated/renamed members.
+    Set include_inherited=True to also list members inherited from ancestor classes,
+    each labeled with their origin class (e.g. add_child from Node)."""
+    return engine_api.get_class(name, include_inherited)
 
 
 @mcp.tool()
