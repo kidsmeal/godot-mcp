@@ -86,7 +86,7 @@ def _parse_suite(text: str) -> dict:
     ff = re.search(r"Failing files:\n((?:\s+-\s*.+\n?)+)", text)
     out["failing_files"] = re.findall(r"-\s*(\S.+)", ff.group(1)) if ff else []
     fa = re.search(r"Failed assertions:\n(.*?)\n=====", text, re.S)
-    out["failures"] = [l.rstrip() for l in fa.group(1).splitlines() if l.strip()] if fa else []
+    out["failures"] = [ln.rstrip() for ln in fa.group(1).splitlines() if ln.strip()] if fa else []
     return out
 
 
@@ -224,7 +224,7 @@ def _validate_verdict(log_text: str) -> tuple[bool, str]:
     if fail_match:
         # Extract context around the first failure line
         lines = log_text.splitlines()
-        fail_lines = [l for l in lines if _FAIL_MARKERS.search(l)]
+        fail_lines = [ln for ln in lines if _FAIL_MARKERS.search(ln)]
         detail = "\n".join(fail_lines[:10])
         return False, f"FAIL  Script produced errors:\n{detail}"
 

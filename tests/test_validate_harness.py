@@ -8,16 +8,12 @@ Tests for:
 """
 from __future__ import annotations
 
-import os
-import subprocess
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 
 from godot_mcp import config
-
 
 # ---------------------------------------------------------------------------
 # Helpers shared across the module
@@ -293,7 +289,6 @@ class TestGodotValidateTool:
         script.write_text("extends SceneTree\n", encoding="utf-8")
 
         validate_called: list = []
-        real_validate = runner.validate_with_autoloads
 
         def spy_validate(script_path, timeout=60):
             validate_called.append(script_path)

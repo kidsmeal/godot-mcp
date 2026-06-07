@@ -6,6 +6,9 @@ license = "MIT"
 requires-python = ">=3.11"
 dependencies = ["mcp>=1.12", "gdtoolkit>=4.5"]
 
+[project.optional-dependencies]
+dev = ["pytest", "ruff", "mypy"]
+
 [project.urls]
 Homepage = "https://github.com/kidsmeal/godot-mcp"
 
@@ -14,3 +17,34 @@ package-dir = {"" = "src"}
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 160
+# Scope ruff to src/godot_mcp and tests; scripts/ is excluded because its
+# files use sys.path.insert before imports (E402) and are intentionally structured
+# as standalone scripts rather than as a proper package.
+exclude = ["scripts"]
+
+[tool.ruff.lint]
+# E/W = pycodestyle, F = pyflakes, I = isort
+# B (bugbear) and UP (pyupgrade) omitted — they'd require behavioral-equivalent
+# rewrites that are out of scope for Phase 4.
+select = ["E", "F", "W", "I"]
+ignore = [
+    # E501 line-too-long: the codebase runs intentionally wide (max ~156 chars).
+    # 160-char limit already chosen to match; keeping ignore avoids surprises on
+    # the few edge lines that creep past 160 during future edits.
+    "E501",
+]
+
+[tool.mypy]
+# Pragmatic Phase-4 baseline: targets the package source only.
+# ignore_missing_imports: mcp, gdtoolkit, lark are third-party without stubs.
+# Not --strict: the codebase uses untyped internal helpers (lint._ast_findings,
+# scene helpers) intentionally; those are note-only, not errors.
+files = ["src/godot_mcp"]
+ignore_missing_imports = true
+# check_untyped_defs omitted deliberately: the lint.py AST helpers are untyped
+# by design (they work with lark Tree/Token objects whose types we can't annotate
+# without lark stubs). Enabling it would require either lark stubs or mass
+# type: ignore comments — neither is worth it in Phase 4.

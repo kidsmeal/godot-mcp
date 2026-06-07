@@ -12,7 +12,19 @@ import json
 
 from mcp.server.fastmcp import FastMCP
 
-from godot_mcp import bridge, catalogs, config, doctor, edit, engine_api, lint, project_ground, refs, runner, scene
+from godot_mcp import (
+    bridge,
+    catalogs,
+    config,
+    doctor,
+    edit,
+    engine_api,
+    lint,
+    project_ground,
+    refs,
+    runner,
+    scene,
+)
 
 mcp = FastMCP("godot-grounding")
 

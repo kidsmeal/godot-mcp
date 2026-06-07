@@ -32,9 +32,19 @@ jobs:
         run: |
           python -m venv .venv
           .venv/bin/python -m pip install -q --upgrade pip -r requirements.txt
+          .venv/bin/python -m pip install -q pytest ruff mypy
 
       - name: Dump engine API
         run: (cd data && godot --headless --dump-extension-api)
 
       - name: Smoke test
         run: PYTHONPATH=src .venv/bin/python scripts/ci_smoke.py
+
+      - name: pytest
+        run: .venv/bin/python -m pytest -q
+
+      - name: ruff check
+        run: .venv/bin/python -m ruff check .
+
+      - name: mypy
+        run: .venv/bin/python -m mypy src/godot_mcp

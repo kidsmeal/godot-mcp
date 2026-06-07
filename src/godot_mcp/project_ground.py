@@ -20,6 +20,8 @@ _TOP_HEADING = re.compile(r"^#{1,3}\s")
 def _sections(text: str) -> list[tuple[str, str]]:
     """Split markdown into (heading, body) pairs."""
     sections: list[tuple[str, str]] = []
+    head: str
+    body: list[str]
     head, body = "(intro)", []
     for ln in text.splitlines():
         if _HEADING.match(ln):
@@ -37,7 +39,7 @@ def list_docs() -> str:
         text = config.read_text(config.PROJECT_ROOT / rel)
         if text is None:
             continue
-        heads = [l.strip() for l in text.splitlines() if _TOP_HEADING.match(l)]
+        heads = [ln.strip() for ln in text.splitlines() if _TOP_HEADING.match(ln)]
         out.append(f"## {name}  ({rel})")
         out.extend(f"  {h}" for h in heads[:60])
     return "\n".join(out) if out else "No known convention docs found under the project root."

@@ -29,11 +29,52 @@ def check(name: str, cond: bool) -> None:
         fails.append(name)
 
 
-# 1) tools register
+# 1) tools register — exact roster assertion (F-9)
+# This set is the authoritative tool roster from server.py.  If a tool is
+# added, removed, or renamed, this assertion will fail until the set is
+# intentionally updated here.
+EXPECTED_TOOLS = {
+    "godot_version",
+    "godot_doctor",
+    "godot_class",
+    "godot_member",
+    "godot_search",
+    "project_convention",
+    "project_catalog",
+    "project_index",
+    "project_find_files",
+    "project_scene",
+    "godot_lint_scene",
+    "project_find_refs",
+    "godot_lint",
+    "godot_lint_source",
+    "godot_write_script",
+    "godot_fix_script",
+    "godot_patch_script",
+    "godot_run_tests",
+    "godot_check",
+    "godot_run_script",
+    "godot_validate",
+    "godot_editor_ping",
+    "godot_run_game",
+    "godot_stop_game",
+    "godot_editor_scene_tree",
+    "godot_open_scene",
+}
+
 names = {t.name for t in asyncio.run(mcp.list_tools())}
-check("15 tools registered", len(names) >= 15)
-check("project_catalog present", "project_catalog" in names)
-check("godot_write_script present", "godot_write_script" in names)
+missing = EXPECTED_TOOLS - names
+extra = names - EXPECTED_TOOLS
+roster_ok = not missing and not extra
+roster_msg = "exact tool roster matches"
+if not roster_ok:
+    parts = []
+    if missing:
+        parts.append(f"missing: {sorted(missing)}")
+    if extra:
+        parts.append(f"extra/renamed: {sorted(extra)}")
+    roster_msg = "tool roster mismatch — " + "; ".join(parts)
+check(roster_msg, roster_ok)
 
 # 2) engine grounding (from dumped extension_api.json)
 node = engine_api.get_class("Node")

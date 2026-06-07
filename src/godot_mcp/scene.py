@@ -64,7 +64,7 @@ def describe(scene_path: str) -> str:
     sub = [s for s in secs if s["kind"] == "sub_resource"]
     nodes = [s for s in secs if s["kind"] == "node"]
     conns = [s for s in secs if s["kind"] == "connection"]
-    header = next((s["attrs"] for s in secs if s["kind"] == "gd_scene"), {})
+    header: dict = next((s["attrs"] for s in secs if s["kind"] == "gd_scene"), {})
     ext_path = {s["attrs"].get("id"): s["attrs"].get("path") for s in ext}
 
     lines = [f"Scene: {scene_path}", f"  format {header.get('format', '?')}, uid {header.get('uid', '(none)')}"]

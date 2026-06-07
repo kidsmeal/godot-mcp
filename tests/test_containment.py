@@ -9,15 +9,12 @@ is monkeypatched so resolve_project_path checks against it.
 """
 from __future__ import annotations
 
-import os
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from godot_mcp import config
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -271,8 +268,6 @@ class TestGodotPatchScript:
                 pytest.fail(f"read_text was called on an outside-project path: {p}")
 
     def test_absolute_outside_no_read(self, tmp_project, outside_file, monkeypatch):
-        reads = []
-        original_rt = outside_file.read_text
         read_called = []
         # Monkeypatch Path.read_text to detect reads of the outside file
         original_path_read_text = Path.read_text

@@ -45,7 +45,7 @@ def report() -> str:
         except Exception:
             add(False, "engine API dump", f"unreadable {api}")
     else:
-        add(False, "engine API dump", f"missing — run setup.ps1 (or scripts/dump_api.ps1)")
+        add(False, "engine API dump", "missing — run setup.ps1 (or scripts/dump_api.ps1)")
 
     try:
         import gdtoolkit  # noqa: F401

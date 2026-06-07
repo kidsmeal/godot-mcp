@@ -20,7 +20,6 @@ import pytest
 from godot_mcp import config
 from godot_mcp.profile import Profile, load
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

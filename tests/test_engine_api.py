@@ -15,13 +15,11 @@ Synthetic record shape is validated against the real extension_api.json schema:
 """
 from __future__ import annotations
 
-import os
 from typing import Any
 
 import pytest
 
 from godot_mcp import config, engine_api
-
 
 # ---------------------------------------------------------------------------
 # Synthetic index fixture
