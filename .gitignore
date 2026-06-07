@@ -4,6 +4,10 @@ __pycache__/
 .DS_Store
 .claude/
 
+# Probe backstop: any __*.gd landing in this repo is a leaked temp probe.
+# The same rule should be added to the game project's .gitignore (separate repo).
+__*.gd
+
 # Generated, engine-version-specific API dump.
 # Regenerate locally with: scripts/dump_api.ps1  (or godot --headless --dump-extension-api)
 data/extension_api.json

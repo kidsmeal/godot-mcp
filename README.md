@@ -62,6 +62,7 @@ keys) that don't exist. This server removes both failure modes by serving:
 | `godot_lint_scene(scene_path)` | Lint a `.tscn`: missing ext_resources, `.godot/imported`, type-as-name |
 | `godot_run_tests(filter, integration)` | Headless test suite → structured pass/fail (files, tests, assertions, failures) |
 | `godot_check(script_path)` | Parse-check one GDScript without running it (`--check-only`) |
+| `godot_validate(script_path)` | Validate a GDScript with autoloads registered (SceneTree boot; catches autoload-reference errors `--check-only` misses) |
 | `godot_run_script(script_path)` | Run a headless SceneTree/MainLoop script (validators/generators) |
 | `godot_lint(script_path)` | Lint one file against AGENTS.md conventions (typing, signals, naming, paths) |
 | `godot_lint_source(source)` | Lint a GDScript string before writing it |
@@ -101,7 +102,7 @@ reconnect the MCP server in the project and use `/godot`.
 
 ## Agent mode
 
-A **`godot-editor` subagent** + a **`/godot` skill** (with a Codex mirror) wire these 15 tools
+A **`godot-editor` subagent** + a **`/godot` skill** (with a Codex mirror) wire these tools
 into one specialized loop: **ground → linted edit → test-to-confirm**. The subagent grounds
 every engine API and project value, edits only through the linted/parse-checked writer, and
 won't report done until the relevant headless tests pass. Sources live in `agent/templates/`;

@@ -26,7 +26,8 @@ For a multi-file change (new subsystem, cross-cutting refactor), hand off to the
 - Writes auto parse-check and roll back on failure — a rollback means fix and retry, never force.
 
 ## Stage 2 — Confirm
-- `godot_check` each touched script.
+- `godot_check` each touched script (fast parse/type check, no autoloads).
+- For scripts that reference autoloads: `godot_validate` (boots SceneTree so autoloads register).
 - `godot_run_tests` filtered to the area (`filter='…'`); full suite for cross-cutting changes. SceneTree validator scripts: `godot_run_script`.
 - Report **changes → grounding → test result**. Not done until green.
 
@@ -50,6 +51,7 @@ For a multi-file change (new subsystem, cross-cutting refactor), hand off to the
 | Lint a file / a snippet | `godot_lint` / `godot_lint_source` |
 | Write / patch a `.gd` (linted, rollback) | `godot_write_script` / `godot_patch_script` |
 | Parse-check one script | `godot_check` |
+| Validate with autoloads (SceneTree boot) | `godot_validate` |
 | Run the suite (filtered) | `godot_run_tests` |
 | Run a SceneTree/MainLoop script | `godot_run_script` |
 | Autofix safe lint issues | `godot_fix_script` |

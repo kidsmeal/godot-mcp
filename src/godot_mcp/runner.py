@@ -4,6 +4,11 @@ Runs the project's Godot test suite / scripts headlessly and returns structured
 pass/fail so the agent can check its own work. Output is captured via Godot's
 --log-file (robust on the Windows GUI build where a stdout pipe can be empty);
 pass/fail comes from the process exit code (0 = all passed).
+
+Phase 1B additions:
+  validate_with_autoloads  — SceneTree validator via plugin-owned data/validate_script.gd
+  run_temp_probe           — per-call generated probe with guaranteed finally-cleanup
+  _validate_verdict        — pure verdict parser (unit-testable, no Godot needed)
 """
 from __future__ import annotations
 
@@ -171,3 +176,112 @@ def check_script(script_path: str, timeout: int = 60) -> str:
     if len(msg) > 3000:
         msg = msg[-3000:]
     return f"{'OK' if r['rc'] == 0 else 'ERRORS'} (exit {r['rc']})\n{msg}"
+
+
+# --- Phase 1B: autoload-aware validation + temp probe -----------------------
+
+# Failure markers to scan for in the engine log (case-insensitive).
+# These are locked against Godot 4.x behaviour: ResourceLoader.load() returns
+# non-null even on a compile error, so the log is the authoritative signal.
+_FAIL_MARKERS = re.compile(
+    r"VALIDATE_NULL|VALIDATE_NOARG"
+    r"|Parse Error"
+    r"|SCRIPT ERROR"
+    r"|Compile Error"
+    r"|not declared"
+    r"|Could not find"
+    r"|Could not load",
+    re.IGNORECASE,
+)
+
+
+def _validate_verdict(log_text: str) -> tuple[bool, str]:
+    """Pure function: scan *log_text* for harness markers + failure lines.
+
+    Returns (passed: bool, message: str).
+    Rules:
+      VALIDATE_OK + no failure markers  → PASS
+      VALIDATE_OK + any failure marker  → FAIL (compile/script error)
+      VALIDATE_NULL                     → FAIL (resource could not load)
+      VALIDATE_NOARG                    → FAIL (caller bug — no path arg)
+      No VALIDATE_* marker at all       → FAIL (harness did not complete)
+    """
+    has_ok = "VALIDATE_OK" in log_text
+    has_null = bool(re.search(r"VALIDATE_NULL", log_text))
+    has_noarg = bool(re.search(r"VALIDATE_NOARG", log_text))
+
+    if has_noarg:
+        return False, "FAIL  VALIDATE_NOARG — harness received no script path argument (caller bug)"
+
+    if has_null:
+        return False, "FAIL  VALIDATE_NULL — script could not be loaded (missing or unreadable resource)"
+
+    if not has_ok:
+        return False, "FAIL  No VALIDATE_* marker in engine log — harness did not complete"
+
+    # has_ok is True — now check for error lines
+    fail_match = _FAIL_MARKERS.search(log_text)
+    if fail_match:
+        # Extract context around the first failure line
+        lines = log_text.splitlines()
+        fail_lines = [l for l in lines if _FAIL_MARKERS.search(l)]
+        detail = "\n".join(fail_lines[:10])
+        return False, f"FAIL  Script produced errors:\n{detail}"
+
+    return True, "PASS  Script compiled and loaded without errors"
+
+
+def validate_with_autoloads(script_path: str, timeout: int = 60) -> str:
+    """Validate a project script via the plugin-owned SceneTree harness.
+
+    Boots the full project so autoloads are registered (unlike --check-only),
+    then loads the target script and reports PASS/FAIL by scanning the engine log.
+
+    The harness (data/validate_script.gd) runs by absolute path — it is NEVER
+    copied into the project, so there is zero leak surface.
+    """
+    try:
+        abs_path = config.resolve_project_path(script_path)
+    except config.PathEscapeError:
+        return f"Refused: {script_path} resolves outside the project root."
+
+    if not abs_path.exists():
+        return f"Not found: {script_path}"
+
+    harness = config.DATA_DIR / "validate_script.gd"
+    r = _run(["--script", str(harness), "--", script_path], timeout)
+
+    if r["timeout"]:
+        return f"TIMED OUT after {timeout}s.\n{_tail(r['out'] or r['err'])}"
+    if r["rc"] is None:
+        return r["err"]
+
+    passed, verdict = _validate_verdict(r["out"])
+    log_tail = _tail(r["out"], 30)
+    return f"{verdict}\n\nScript: {script_path}\n\nLog (tail):\n{log_tail}"
+
+
+def run_temp_probe(
+    source: str,
+    user_args: list[str] | None = None,
+    timeout: int = 60,
+) -> dict:
+    """Write *source* to a unique OS-temp .gd and run it headless.
+
+    The temp file (and any .gd.uid sibling Godot may emit) are deleted in a
+    finally block — a crash mid-run cannot leak the probe into the project or
+    any tracked directory.
+
+    Returns the _run dict: {rc, out, err, timeout}.
+    """
+    fd, gd_path = tempfile.mkstemp(suffix=".gd", prefix="godot_mcp_probe_")
+    try:
+        os.write(fd, source.encode("utf-8"))
+        os.close(fd)
+        extra: list[str] = ["--script", gd_path]
+        if user_args:
+            extra += ["--"] + user_args
+        return _run(extra, timeout)
+    finally:
+        _safe_unlink(gd_path)
+        _safe_unlink(gd_path + ".uid")

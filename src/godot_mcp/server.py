@@ -198,6 +198,22 @@ def godot_run_script(script_path: str, timeout: int = 120) -> str:
     return runner.run_script(script_path, timeout)
 
 
+@mcp.tool()
+def godot_validate(script_path: str, timeout: int = 60) -> str:
+    """Validate a GDScript with the project's autoloads fully registered.
+
+    Unlike godot_check (--check-only, no SceneTree), this boots the project
+    SceneTree so all autoloads are available as global identifiers.  Catches
+    'not declared' errors on autoload references that --check-only misses.
+
+    Uses the plugin-owned data/validate_script.gd harness — the harness runs by
+    absolute path and is NEVER written into the project, so there is no leak risk.
+    Verdict comes from the engine log (exit code is unreliable for this harness).
+
+    script_path is a res:// path."""
+    return runner.validate_with_autoloads(script_path, timeout)
+
+
 # --- Live editor bridge (optional 'Godot Grounding Bridge' addon) -----------
 @mcp.tool()
 def godot_editor_ping() -> str:
