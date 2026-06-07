@@ -72,6 +72,7 @@ Now that real coverage exists, formalize around it.
 
 ### Phase 5 — Feature F: grounding surfaces
 - `project_input_actions()` — parse `[input]` (`re.S`); **hardcode the standard `ui_*` set**; built-in **typo-lint** rule (hardcoded `use_pattern`, threaded through `lint_source` so it fires on the write path).
+- **Carried from Phase 3 review:** harden `lint.py:242` — wrap `re.compile(ref["use_pattern"])` in `try/except re.error`. It's the last catalog-ref path that can still raise `re.error` to the agent (a `lint_catalog_ref` whose `use_pattern` value is invalid regex); fits here since Phase 5 already touches `lint.py`.
 - `project_setting(name, resolve=False)` — file parse + optional headless resolve.
 - `project_classes()` — `class_name → res://` scan, `_gd_signature` cached.
 - **`project_layers()`** — named 2D/3D physics + render layers from `project.godot` (same parse family; flagged high-value in review).

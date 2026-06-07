@@ -56,6 +56,8 @@ def report() -> str:
 
     prof = config.PROFILE
     add(True, f"profile: {prof.name}", f"{len(prof.catalogs)} catalogs, {len(prof.docs)} docs")
+    for err in prof.errors:
+        add(False, "profile error", err)
 
     for label, scene in (("unit", prof.suite_scene), ("integration", prof.integration_scene)):
         if scene:
@@ -65,7 +67,7 @@ def report() -> str:
     missing_docs = [v for v in prof.docs.values() if not (root / v).exists()]
     add(not missing_docs, "profile docs exist", "missing " + ", ".join(missing_docs) if missing_docs else f"{len(prof.docs)} present")
 
-    missing_cat = [c["file"] for c in prof.catalogs if not (root / c["file"]).exists()]
+    missing_cat = [c["file"] for c in prof.catalogs if c.get("file") and not (root / c["file"]).exists()]
     add(not missing_cat, "profile catalog files exist", "missing " + ", ".join(missing_cat) if missing_cat else "all present")
 
     head = f"godot_doctor — {prof.name}\n{'All good.' if issues == 0 else f'{issues} issue(s) found.'}\n"

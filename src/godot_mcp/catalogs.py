@@ -23,12 +23,17 @@ def autoloads() -> list[tuple[str, str]]:
 
 
 def _specs() -> dict[str, dict]:
-    return {c["name"].lower(): c for c in config.PROFILE.catalogs}
+    # Skip entries missing 'name' so a KeyError never escapes here; doctor surfaces them.
+    return {c["name"].lower(): c for c in config.PROFILE.catalogs if c.get("name")}
 
 
 def _parse(spec: dict):
+    pattern = spec.get("pattern", "")
+    file_rel = spec.get("file", "")
+    if not pattern or not file_rel:
+        return []  # incomplete spec — skip rather than crash; doctor surfaces the error
     try:
-        return re.findall(spec["pattern"], _read(spec["file"]))
+        return re.findall(pattern, _read(file_rel))
     except re.error:
         return []  # malformed profile pattern — surface as empty rather than crash
 
@@ -47,12 +52,14 @@ def catalog(kind: str = "all") -> str:
         a = autoloads()
         return f"autoloads ({len(a)}):\n" + "\n".join(f"  {k} -> {v}" for k, v in a)
     if kind == "all":
-        parts = [catalog(c["name"]) for c in config.PROFILE.catalogs]
+        # Only iterate entries that have a name; nameless entries are surfaced by doctor.
+        parts = [catalog(c["name"]) for c in config.PROFILE.catalogs if c.get("name")]
         parts.append(catalog("autoloads"))
         return "\n\n".join(parts)
     if kind in specs:
-        return _format(specs[kind]["name"], _parse(specs[kind]))
-    avail = ", ".join([c["name"] for c in config.PROFILE.catalogs] + ["autoloads"])
+        display_name = specs[kind].get("name", kind)
+        return _format(display_name, _parse(specs[kind]))
+    avail = ", ".join([c["name"] for c in config.PROFILE.catalogs if c.get("name")] + ["autoloads"])
     return f'Unknown catalog "{kind}". Available: {avail}'
 
 
@@ -98,8 +105,16 @@ def valid_keys(valid_pattern: str) -> set[str]:
 
 
 def build_catalog_refs() -> list[dict]:
-    """Resolve the profile's lint_catalog_ref specs into {use_pattern, valid_pattern, valid_set}."""
-    return [
-        {"use_pattern": r["use_pattern"], "valid_pattern": r["valid_pattern"], "valid_set": valid_keys(r["valid_pattern"])}
-        for r in config.PROFILE.catalog_refs
-    ]
+    """Resolve the profile's lint_catalog_ref specs into {use_pattern, valid_pattern, valid_set}.
+
+    Entries missing required keys are skipped rather than raising KeyError;
+    doctor.report() surfaces those errors via Profile.errors.
+    """
+    out = []
+    for ref in config.PROFILE.catalog_refs:
+        use_pat = ref.get("use_pattern", "")
+        valid_pat = ref.get("valid_pattern", "")
+        if not use_pat or not valid_pat:
+            continue  # incomplete spec — skip; doctor surfaces it
+        out.append({"use_pattern": use_pat, "valid_pattern": valid_pat, "valid_set": valid_keys(valid_pat)})
+    return out
