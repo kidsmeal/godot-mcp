@@ -12,3 +12,6 @@ __*.gd
 # Regenerate locally with: scripts/dump_api.ps1  (or godot --headless --dump-extension-api)
 data/extension_api.json
 data/godot_docs/
+
+# ClauDHD local session state
+.now/
