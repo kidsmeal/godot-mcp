@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from godot_mcp import catalogs, config, lint, runner
+from godot_mcp import catalogs, config, lint, project_ground, runner
 
 _UNTYPED_VAR = re.compile(r"^(\s*(?:@\w+(?:\([^)]*\))?\s+)*(?:static\s+)?var\s+\w+)\s*=\s*(?!=)(.*)$")
 _FUNC_NO_RET = re.compile(r"^(\s*)((?:@\w+(?:\([^)]*\))?\s+)*(?:static\s+)?func\s+\w+\s*\(.*?\))\s*:\s*$")
@@ -24,7 +24,12 @@ def write_script(res_path: str, content: str, enforce_conventions: bool = False)
     except config.PathEscapeError:
         return f"Refused: {res_path} resolves outside the project root."
 
-    findings = lint.lint_source(content, res_path, catalog_refs=catalogs.build_catalog_refs())
+    findings = lint.lint_source(
+        content,
+        res_path,
+        catalog_refs=catalogs.build_catalog_refs(),
+        input_actions=project_ground.input_action_set(),
+    )
     if enforce_conventions and lint.has_errors(findings):
         return (
             "WRITE BLOCKED (enforce_conventions=True) — convention errors:\n"

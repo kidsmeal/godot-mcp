@@ -7,6 +7,10 @@ You are the Godot editing specialist for the {{PROJECT_NAME}} project (GDScript)
 ## 1 — Ground before you act
 - Engine API: before calling ANY Godot class / method / signal, confirm the exact signature for this project's engine version with godot_member (or godot_class / godot_search). Do not write an engine call from memory.
 - Project values: before using any catalog key, confirm it exists with project_catalog. Never invent a key.
+- Input actions: before writing any Input.is_action_pressed/just_pressed/etc. call, confirm the action name with project_input_actions. Never invent an action name.
+- Project settings: read declared settings with project_setting (dotted key, e.g. application/config/name).
+- Class names: confirm a class_name exists before extending or typing it with project_classes.
+- Layer names: confirm physics/render/nav layer names with project_layers before referencing them.
 - Conventions: pull the rule that applies with project_convention.
 - Location: find files with project_find_files (Windows glob silently misses files) and the system map with project_index. Read every file you will touch end-to-end before editing it.
 

@@ -239,7 +239,10 @@ def _catalog_findings(source, catalog_refs):
         return []
     out: list[dict] = []
     for ref in catalog_refs:
-        use_rx = re.compile(ref["use_pattern"])
+        try:
+            use_rx = re.compile(ref["use_pattern"])
+        except re.error:
+            continue  # invalid regex in profile — skip this ref (matches catalogs.valid_keys style)
         known = set(ref.get("valid_set", ()))
         if ref.get("valid_pattern"):  # also accept registrations in THIS not-yet-saved source
             known |= set(re.findall(ref["valid_pattern"], source))
@@ -262,6 +265,43 @@ def _catalog_findings(source, catalog_refs):
     return out
 
 
+# Match common Godot input-action call sites.
+# Captures the action name string from:
+#   Input.is_action_pressed("name"), Input.is_action_just_pressed("name"),
+#   Input.is_action_just_released("name"), Input.get_action_strength("name"),
+#   InputMap.action_has_event("name"), InputMap.action_erase_event("name"), etc.
+# Also matches &"name" bare string-name literals passed in those positions.
+_INPUT_ACTION_RX = re.compile(
+    r"""(?:Input\.(?:is_action_(?:pressed|just_pressed|just_released)|get_action_strength|get_action_raw_strength|get_axis|get_vector)\s*\(\s*|InputMap\.\w+\s*\(\s*)(?:&?)"([^"]+)""",
+    re.X,
+)
+
+
+def _input_action_findings(source: str, input_actions: set[str]) -> list[dict]:
+    """Flag input-action string references that are NOT registered AND look like a typo
+    (edit distance <= 2) of a registered action. Novel/intentional names are not flagged."""
+    if not input_actions:
+        return []
+    out: list[dict] = []
+    for i, line in enumerate(source.splitlines(), start=1):
+        if line.lstrip().startswith("#"):
+            continue
+        for m in _INPUT_ACTION_RX.finditer(line):
+            key = m.group(1)
+            if not key or key in input_actions:
+                continue
+            best, best_d = None, 3
+            for k in input_actions:
+                d = _lev(key, k, 2)
+                if d < best_d:
+                    best, best_d = k, d
+                    if d == 1:
+                        break
+            if best_d <= 2:
+                out.append(_f(i, "warn", "unknown-input-action", f'"{key}" is not a registered input action; did you mean "{best}"?'))
+    return out
+
+
 def _suppressions(source):
     sup: dict[int, set] = {}
     for i, line in enumerate(source.splitlines(), start=1):
@@ -271,7 +311,12 @@ def _suppressions(source):
     return sup
 
 
-def lint_source(source: str, path: str = "", catalog_refs: list | None = None) -> list[dict]:
+def lint_source(
+    source: str,
+    path: str = "",
+    catalog_refs: list | None = None,
+    input_actions: set[str] | None = None,
+) -> list[dict]:
     findings: list[dict] = []
     fallback = False
     if _HAS_GP:
@@ -286,6 +331,8 @@ def lint_source(source: str, path: str = "", catalog_refs: list | None = None) -
 
     findings += _line_findings(source, path)
     findings += _catalog_findings(source, catalog_refs)
+    if input_actions:
+        findings += _input_action_findings(source, input_actions)
 
     sup = _suppressions(source)
     findings = [f for f in findings if not (f["line"] in sup and ("*" in sup[f["line"]] or f["rule"] in sup[f["line"]]))]

@@ -60,6 +60,10 @@ EXPECTED_TOOLS = {
     "godot_stop_game",
     "godot_editor_scene_tree",
     "godot_open_scene",
+    "project_input_actions",
+    "project_setting",
+    "project_classes",
+    "project_layers",
 }
 
 names = {t.name for t in asyncio.run(mcp.list_tools())}

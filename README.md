@@ -58,6 +58,10 @@ keys) that don't exist. This server removes both failure modes by serving:
 | `project_index()` | The configured codebase-map doc |
 | `project_find_files(subdir, pattern)` | Windows-glob-safe `res://` file listing |
 | `project_find_refs(symbol, kind)` | Classified references to an identifier across all `.gd` (def/call/type/…) |
+| `project_input_actions()` | All input actions: project-defined (from `[input]`) + built-in `ui_*` roster |
+| `project_setting(name, resolve)` | A project setting value by dotted key (e.g. `application/config/name`); `resolve=True` uses a Godot probe |
+| `project_classes()` | All `class_name` declarations in the project, mapped to their `res://` path |
+| `project_layers()` | Named physics, render, navigation, and avoidance layers from `[layer_names]` |
 | `project_scene(scene_path)` | Summarize a `.tscn`: deps, node tree, scripts, connections |
 | `godot_lint_scene(scene_path)` | Lint a `.tscn`: missing ext_resources, `.godot/imported`, type-as-name |
 | `godot_run_tests(filter, integration)` | Headless test suite → structured pass/fail (files, tests, assertions, failures) |

@@ -138,6 +138,39 @@ def project_find_refs(symbol: str, kind: str = "all", limit: int = 200) -> str:
     return refs.find_refs(symbol, kind, limit)
 
 
+@mcp.tool()
+def project_input_actions() -> str:
+    """List all input actions for this project: project-defined actions (from [input]
+    in project.godot) and the standard built-in ui_* actions. Use to ground any
+    code that calls Input.is_action_pressed/just_pressed/etc. with an action string."""
+    return project_ground.input_actions()
+
+
+@mcp.tool()
+def project_setting(name: str, resolve: bool = False) -> str:
+    """Read a project setting from project.godot by dotted key (e.g.
+    'application/config/name', 'display/window/size/viewport_width').
+    resolve=True optionally resolves via a headless Godot probe so default-overrides
+    are applied; degrades gracefully if Godot is unavailable."""
+    return project_ground.setting(name, resolve)
+
+
+@mcp.tool()
+def project_classes() -> str:
+    """Scan all project .gd files for class_name declarations and return a map of
+    ClassName -> res://path. Cached against the .gd file signature so repeated calls
+    are fast. Use to verify a class_name exists before extending or typing it."""
+    return project_ground.classes()
+
+
+@mcp.tool()
+def project_layers() -> str:
+    """List named physics, render, navigation, and avoidance layers from the
+    [layer_names] section of project.godot. Grouped by category (2d_physics,
+    3d_render, 2d_navigation, avoidance, …) showing layer number → name."""
+    return project_ground.layers()
+
+
 # --- Convention-linted edits ------------------------------------------------
 @mcp.tool()
 def godot_lint(script_path: str) -> str:
@@ -152,14 +185,14 @@ def godot_lint(script_path: str) -> str:
     src = config.read_text(target)
     if src is None:
         return f"Not found: {script_path}"
-    return lint.format_findings(lint.lint_source(src, script_path, catalog_refs=catalogs.build_catalog_refs()))
+    return lint.format_findings(lint.lint_source(src, script_path, catalog_refs=catalogs.build_catalog_refs(), input_actions=project_ground.input_action_set()))
 
 
 @mcp.tool()
 def godot_lint_source(source: str, path: str = "") -> str:
     """Lint a GDScript snippet/string BEFORE writing it (same rules as godot_lint).
     'path' is optional context for test-only rules."""
-    return lint.format_findings(lint.lint_source(source, path, catalog_refs=catalogs.build_catalog_refs()))
+    return lint.format_findings(lint.lint_source(source, path, catalog_refs=catalogs.build_catalog_refs(), input_actions=project_ground.input_action_set()))
 
 
 @mcp.tool()
