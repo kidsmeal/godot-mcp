@@ -17,6 +17,7 @@ from godot_mcp import config
 # Hardcoded Godot 4.x built-in ui_* action roster
 # ---------------------------------------------------------------------------
 _BUILTIN_UI_ACTIONS: frozenset[str] = frozenset({
+    # Core navigation / selection
     "ui_accept",
     "ui_select",
     "ui_cancel",
@@ -30,24 +31,30 @@ _BUILTIN_UI_ACTIONS: frozenset[str] = frozenset({
     "ui_page_down",
     "ui_home",
     "ui_end",
+    # Clipboard / history
     "ui_cut",
     "ui_copy",
     "ui_paste",
     "ui_undo",
     "ui_redo",
+    # Text-editing — completion
+    "ui_text_completion_query",
     "ui_text_completion_accept",
     "ui_text_completion_replace",
+    # Text-editing — newlines / indent
     "ui_text_newline",
     "ui_text_newline_blank",
     "ui_text_newline_above",
     "ui_text_indent",
     "ui_text_dedent",
+    # Text-editing — backspace / delete
     "ui_text_backspace",
     "ui_text_backspace_word",
     "ui_text_backspace_all_to_left",
     "ui_text_delete",
     "ui_text_delete_word",
     "ui_text_delete_all_to_right",
+    # Text-editing — caret movement
     "ui_text_caret_left",
     "ui_text_caret_word_left",
     "ui_text_caret_line_start",
@@ -60,6 +67,9 @@ _BUILTIN_UI_ACTIONS: frozenset[str] = frozenset({
     "ui_text_caret_page_down",
     "ui_text_caret_document_start",
     "ui_text_caret_document_end",
+    "ui_text_caret_add_above",
+    "ui_text_caret_add_below",
+    # Text-editing — scroll / selection
     "ui_text_scroll_up",
     "ui_text_scroll_down",
     "ui_text_select_all",
@@ -68,13 +78,28 @@ _BUILTIN_UI_ACTIONS: frozenset[str] = frozenset({
     "ui_text_skip_selection_for_next_occurrence",
     "ui_text_clear_carets_and_selection",
     "ui_text_toggle_insert_mode",
-    "ui_menu",
     "ui_text_submit",
-    "ui_graph_snap",
+    # Text-editing — misc
+    "ui_menu",
+    "ui_unicode_start",
+    # Graph editor
+    "ui_graph_duplicate",
     "ui_graph_delete",
+    "ui_graph_follow_left",
+    "ui_graph_follow_right",
+    # File dialog
     "ui_filedialog_up_one_level",
     "ui_filedialog_refresh",
     "ui_filedialog_show_hidden",
+    "ui_filedialog_delete",
+    "ui_filedialog_find",
+    "ui_filedialog_focus_path",
+    # Color picker
+    "ui_colorpicker_delete_preset",
+    # Misc UI
+    "ui_close_dialog",
+    "ui_accessibility_drag_and_drop",
+    "ui_focus_mode",
     "ui_swap_input_direction",
 })
 
@@ -255,6 +280,9 @@ def setting(name: str, resolve: bool = False) -> str:
         return f"Setting '{name}' not found in project.godot (section=[{section}], key={key})."
 
     # resolve=True: use a headless probe via runner.run_temp_probe
+    if not re.fullmatch(r"[A-Za-z0-9_/.\-]+", name):
+        return f"Setting name {name!r} contains characters not allowed in a ProjectSettings key."
+
     from godot_mcp import runner  # avoid circular import at module level
 
     probe_source = (

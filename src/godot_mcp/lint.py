@@ -243,9 +243,14 @@ def _catalog_findings(source, catalog_refs):
             use_rx = re.compile(ref["use_pattern"])
         except re.error:
             continue  # invalid regex in profile — skip this ref (matches catalogs.valid_keys style)
+        if use_rx.groups < 1:
+            continue  # pattern has no capture group — m.group(1) would IndexError
         known = set(ref.get("valid_set", ()))
         if ref.get("valid_pattern"):  # also accept registrations in THIS not-yet-saved source
-            known |= set(re.findall(ref["valid_pattern"], source))
+            try:
+                known |= set(re.findall(ref["valid_pattern"], source))
+            except re.error:
+                pass  # invalid valid_pattern — skip same-source exemption, use valid_set only
         for i, line in enumerate(source.splitlines(), start=1):
             if line.lstrip().startswith("#"):
                 continue
@@ -265,16 +270,43 @@ def _catalog_findings(source, catalog_refs):
     return out
 
 
-# Match common Godot input-action call sites.
-# Captures the action name string from:
-#   Input.is_action_pressed("name"), Input.is_action_just_pressed("name"),
-#   Input.is_action_just_released("name"), Input.get_action_strength("name"),
-#   InputMap.action_has_event("name"), InputMap.action_erase_event("name"), etc.
-# Also matches &"name" bare string-name literals passed in those positions.
-_INPUT_ACTION_RX = re.compile(
-    r"""(?:Input\.(?:is_action_(?:pressed|just_pressed|just_released)|get_action_strength|get_action_raw_strength|get_axis|get_vector)\s*\(\s*|InputMap\.\w+\s*\(\s*)(?:&?)"([^"]+)""",
-    re.X,
-)
+# Input-action call-site patterns.  Each must have exactly one capture group: the
+# action name string.  Both " and ' are accepted.  Listed from broadest to most specific;
+# the find-loop deduplicates hits on the same line position via the key string.
+_Q = r"""(?:&?)["']([^"']+)["']"""  # quoted StringName literal (with optional &)
+_INPUT_ACTION_RX_LIST = [
+    # Input.is_action_*(action), Input.get_action_strength/raw/axis/vector first arg,
+    # InputMap.*(action) — standard singletons
+    re.compile(
+        r"(?:Input\.(?:is_action_(?:pressed|just_pressed|just_released)"
+        r"|get_action_strength|get_action_raw_strength|get_axis|get_vector)"
+        r"|InputMap\.\w+)\s*\(\s*" + _Q
+    ),
+    # event.is_action_*(action) and event.is_action(action) — the _input(event) pattern
+    re.compile(r"\b\w+\.is_action(?:_pressed|_just_pressed|_just_released)?\s*\(\s*" + _Q),
+    # get_axis second arg: Input.get_axis("neg", "pos")
+    re.compile(
+        r"Input\.get_axis\s*\(\s*" + r"""(?:&?)["'][^"']+["']""" + r"\s*,\s*" + _Q
+    ),
+    # get_vector args 2-4 (arg 1 covered above)
+    re.compile(
+        r"Input\.get_vector\s*\(\s*" + r"""(?:&?)["'][^"']+["']""" + r"\s*,\s*" + _Q
+    ),
+    re.compile(
+        r"Input\.get_vector\s*\(\s*"
+        + r"""(?:&?)["'][^"']+["']""" + r"\s*,\s*"
+        + r"""(?:&?)["'][^"']+["']""" + r"\s*,\s*" + _Q
+    ),
+    re.compile(
+        r"Input\.get_vector\s*\(\s*"
+        + r"""(?:&?)["'][^"']+["']""" + r"\s*,\s*"
+        + r"""(?:&?)["'][^"']+["']""" + r"\s*,\s*"
+        + r"""(?:&?)["'][^"']+["']""" + r"\s*,\s*" + _Q
+    ),
+]
+# Registrations in the same source: InputMap.add_action("name") — exempt these
+# so a file that registers its own actions doesn't warn about them.
+_INPUT_ADD_ACTION_RX = re.compile(r"InputMap\.add_action\s*\(\s*" + _Q)
 
 
 def _input_action_findings(source: str, input_actions: set[str]) -> list[dict]:
@@ -282,23 +314,36 @@ def _input_action_findings(source: str, input_actions: set[str]) -> list[dict]:
     (edit distance <= 2) of a registered action. Novel/intentional names are not flagged."""
     if not input_actions:
         return []
+    # Same-source exemption: actions registered in this file are treated as valid.
+    local_adds: set[str] = set()
+    for ln in source.splitlines():
+        if ln.lstrip().startswith("#"):
+            continue
+        for m in _INPUT_ADD_ACTION_RX.finditer(ln):
+            if m.group(1):
+                local_adds.add(m.group(1))
+    valid = input_actions | local_adds
+
     out: list[dict] = []
     for i, line in enumerate(source.splitlines(), start=1):
         if line.lstrip().startswith("#"):
             continue
-        for m in _INPUT_ACTION_RX.finditer(line):
-            key = m.group(1)
-            if not key or key in input_actions:
-                continue
-            best, best_d = None, 3
-            for k in input_actions:
-                d = _lev(key, k, 2)
-                if d < best_d:
-                    best, best_d = k, d
-                    if d == 1:
-                        break
-            if best_d <= 2:
-                out.append(_f(i, "warn", "unknown-input-action", f'"{key}" is not a registered input action; did you mean "{best}"?'))
+        seen_on_line: set[str] = set()
+        for rx in _INPUT_ACTION_RX_LIST:
+            for m in rx.finditer(line):
+                key = m.group(1)
+                if not key or key in valid or key in seen_on_line:
+                    continue
+                seen_on_line.add(key)
+                best, best_d = None, 3
+                for k in valid:
+                    d = _lev(key, k, 2)
+                    if d < best_d:
+                        best, best_d = k, d
+                        if d == 1:
+                            break
+                if best_d <= 2:
+                    out.append(_f(i, "warn", "unknown-input-action", f'"{key}" is not a registered input action; did you mean "{best}"?'))
     return out
 
 

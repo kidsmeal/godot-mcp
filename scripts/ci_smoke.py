@@ -17,7 +17,8 @@ _fix = pathlib.Path(tempfile.mkdtemp(prefix="gmcp_ci_"))
 os.environ["GODOT_PROJECT"] = str(_fix)
 sys.path.insert(0, str(REPO / "src"))
 
-from godot_mcp import engine_api, init as initmod, lint  # noqa: E402
+from godot_mcp import engine_api, lint  # noqa: E402
+from godot_mcp import init as initmod  # noqa: E402
 from godot_mcp.server import mcp  # noqa: E402
 
 fails: list[str] = []

@@ -323,19 +323,20 @@ class TestProjectSetting:
         assert isinstance(result, str)
 
     def test_resolve_true_uses_run_temp_probe(self, settings_project, monkeypatch):
-        """resolve=True must call runner.run_temp_probe (monkeypatched) and parse the output."""
+        """resolve=True must call runner.run_temp_probe and parse the __SETTING_VALUE__ marker."""
         from godot_mcp import runner
         probe_called = []
 
         def fake_probe(source, user_args=None, timeout=60):
             probe_called.append(source)
-            return {"rc": 0, "out": "MyGameName\n", "err": "", "timeout": False}
+            return {"rc": 0, "out": "__SETTING_VALUE__MyGameName\n", "err": "", "timeout": False}
 
         monkeypatch.setattr(runner, "run_temp_probe", fake_probe)
         from godot_mcp import project_ground
         result = project_ground.setting("application/config/name", resolve=True)
         assert probe_called, "run_temp_probe must be called when resolve=True"
         assert "MyGameName" in result
+        assert "resolved via Godot" in result  # must take the marker-parsing path, not the fallback
 
     def test_resolve_true_godot_unavailable_degrades(self, settings_project, monkeypatch):
         """When the Godot probe fails (binary not found), resolve=True degrades gracefully."""
