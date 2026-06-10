@@ -70,5 +70,15 @@ def report() -> str:
     missing_cat = [c["file"] for c in prof.catalogs if c.get("file") and not (root / c["file"]).exists()]
     add(not missing_cat, "profile catalog files exist", "missing " + ", ".join(missing_cat) if missing_cat else "all present")
 
+    try:
+        from godot_mcp import bridge as _bridge  # lazy import to avoid circular dep
+        ping_result = _bridge.ping()
+        if ping_result.startswith("Editor bridge OK"):
+            lines.append(f"  [OK  ] bridge (optional) — {ping_result}")
+        else:
+            lines.append(f"  [FAIL] bridge (optional) — {ping_result}")
+    except Exception:  # noqa: BLE001
+        lines.append("  [FAIL] bridge (optional) — could not check bridge version")
+
     head = f"godot_doctor — {prof.name}\n{'All good.' if issues == 0 else f'{issues} issue(s) found.'}\n"
     return head + "\n".join(lines)

@@ -79,11 +79,38 @@ Now that real coverage exists, formalize around it.
 - Grant lists (×3) + README updated for every new tool.
 - **Exit:** each tool correct on fixtures; lint fires on the write path; no new profile keys.
 
-### Phase 6 — Bridge hardening  *(F-8)* — prerequisite for G/H
-- **Per-client receive buffers + newline-framed reassembly** in `bridge.gd` (replace parse-each-chunk) so multi-packet commands/responses survive.
-- Distinct **`protocol`/`bridge_version`** field in `ping` (not overloading the engine `version`) + a **`doctor` bridge-version check**.
-- Resolver-validation pattern documented for all new path-taking bridge cmds.
-- **Exit:** a >MTU command round-trips intact; `doctor` reports the bridge protocol version / mismatch.
+### Phase 6 — Bridge hardening  *(F-8 + audit bucket B)* — prerequisite for G/H
+
+Original scope (F-8) + all bucket-B audit findings added here before implementation.
+
+#### Framing + protocol (original F-8)
+- **B7/Per-client receive buffers + newline-framed byte reassembly** in `bridge.gd`: accumulate raw bytes via `get_partial_data`, split on `\n` in bytes (not per-chunk UTF-8 decode — that corrupts multi-byte chars at packet boundaries). Cap per-client buffer at 1 MiB to prevent unauthenticated memory growth.
+- Distinct **`protocol`/`bridge_version`** field in `ping` response (not overloading the engine `version` key) + a **`doctor` bridge-version check** that reports the bridge protocol version or "bridge not reachable".
+
+#### Security (B1 — highest priority)
+- **B1** Per-session random auth token: generated at `_enter_tree` in `bridge.gd`, written to a temp file (user-readable only). Python `bridge.py` reads it from the same path and sends it as a `"token"` field on every command. The addon checks the token before dispatching; missing/wrong token → `{"ok": false, "error": "unauthorized"}`. Defeats any local process impersonating the bridge.
+
+#### Protocol correctness (B2, B5, B6)
+- **B2** Remove the `save_scene` branch from `bridge.gd` entirely — it's live ahead of Phase 8 with none of its safeguards, and returns `{"ok": false}` with no `"error"` key. Remove until Phase 8.
+- **B5** Validate `scene` value in `run` cmd: `{"main", "current"}` only on both sides (bridge.gd + bridge.py). Any unrecognized value currently falls through silently to `play_main_scene()`.
+- **B6** Add server-side path validation in `bridge.gd` for `open_scene`: refuse any path that doesn't start with `res://` or contains `..`. (Python-side containment check already exists.) Also: `bridge.py:open_scene` should call `config.resolve_project_path` before sending (`.exists()` check so "Opened X" is never reported for a missing path).
+
+#### Error handling (B3, B4, B8, B9, B10)
+- **B3** `bridge.py._send`: catch `ConnectionRefusedError` alone for the "not running" message; `TimeoutError` → "bridge timed out"; `ConnectionResetError`/empty-response → distinct "bridge disconnected" message. `json.JSONDecodeError` on empty response → friendly error (not a raw exception).
+- **B4** All `bridge.py` wrappers use `r["error"]` which KeyErrors on a well-formed `{"ok": false}` with no `error` key. Replace all with `r.get("error", "bridge returned a malformed response")`.
+- **B8** `bridge.gd._send`: replace blocking `put_data` with an outbound byte queue flushed via `put_partial_data` in `_process`. A client that stops reading can currently stall the editor UI.
+- **B9** `bridge.gd`: cap concurrent clients at 1 (one connect-per-command Python client is the design), drop/refuse a second connection. Add an idle timeout (~30 s) to drop half-open peers instead of polling them forever.
+- **B10** `bridge.py._send`: track an absolute deadline (`time.monotonic() + timeout`) across the recv loop; cap `buf` at 1 MiB. Currently: per-`recv` timeout, unbounded buffer.
+
+#### Exit criteria
+- A command whose serialized JSON payload exceeds one TCP MTU (~1460 B) round-trips intact.
+- `ping` response includes a `"bridge_version"` field (e.g. `"1.0"`); `doctor` reports it or "bridge not reachable (no version check)".
+- Auth token is checked; an unauthorized client gets `{"ok": false, "error": "unauthorized"}`.
+- `save_scene` is gone from the wire until Phase 8.
+- `run` with `scene="unknown"` returns an error on both sides.
+- `open_scene` with a `..`-escape or absolute path is refused by the addon (not just Python).
+- Error messages from `bridge.py` are human-readable for the three failure modes (not-running, timeout, disconnected).
+- Tests: offline (monkeypatching socket/`_send`) covering B2, B3, B4, B5, B6-Python side, B10. GDScript-side tests (B1, B6-GD, B7, B8, B9) are editor-gated — skip/xfail without the bridge running.
 
 ### Phase 7 — Feature G: runtime loop
 - `godot_run_game_headless` — **first task: empirically verify `--quit-after` exit-code behavior**; verdict = exit code AND clean parsed log.

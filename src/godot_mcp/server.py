@@ -294,9 +294,11 @@ def godot_editor_scene_tree() -> str:
 def godot_open_scene(scene_path: str) -> str:
     """Open a scene (res:// path) in the Godot editor via the editor bridge addon."""
     try:
-        config.resolve_project_path(scene_path)
+        resolved = config.resolve_project_path(scene_path)
     except config.PathEscapeError:
         return f"Refused: {scene_path} resolves outside the project root."
+    if not resolved.exists():
+        return f"Not found: {scene_path}"
     return bridge.open_scene(scene_path)
 
 
