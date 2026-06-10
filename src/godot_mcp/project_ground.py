@@ -127,8 +127,11 @@ def _sections(text: str) -> list[tuple[str, str]]:
 
 
 def list_docs() -> str:
+    docs = config.PROFILE.docs
+    if not isinstance(docs, dict):
+        return "No known convention docs found under the project root."
     out: list[str] = []
-    for name, rel in config.PROFILE.docs.items():
+    for name, rel in docs.items():
         text = config.read_text(config.PROJECT_ROOT / rel)
         if text is None:
             continue
@@ -147,7 +150,10 @@ def convention(topic: str = "") -> str:
         )
     ql = topic.lower()
     hits: list[str] = []
-    for name, rel in config.PROFILE.docs.items():
+    docs = config.PROFILE.docs
+    if not isinstance(docs, dict):
+        return f'No sections matching "{topic}". Call project_convention() to list docs.'
+    for name, rel in docs.items():
         text = config.read_text(config.PROJECT_ROOT / rel)
         if not text:
             continue
@@ -163,9 +169,12 @@ def convention(topic: str = "") -> str:
 
 
 def index() -> str:
-    rel = config.PROFILE.docs.get(config.PROFILE.index_doc)
+    docs = config.PROFILE.docs
+    if not isinstance(docs, dict):
+        return "No index doc configured (docs config is not a table)."
+    rel = docs.get(config.PROFILE.index_doc)
     if not rel:
-        return f"No index doc configured (profile index_doc={config.PROFILE.index_doc!r}). Available docs: {', '.join(config.PROFILE.docs) or 'none'}."
+        return f"No index doc configured (profile index_doc={config.PROFILE.index_doc!r}). Available docs: {', '.join(docs) or 'none'}."
     return config.read_text(config.PROJECT_ROOT / rel) or f"{rel} not found."
 
 

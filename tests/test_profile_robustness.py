@@ -355,3 +355,99 @@ class TestProfileBackwardCompat:
             catalog_refs=[],
         )
         assert prof.errors == []
+
+
+# ---------------------------------------------------------------------------
+# 6. C15 — shape violations: [catalog] table vs [[catalog]] array
+# ---------------------------------------------------------------------------
+
+class TestShapeViolations:
+    """C15: non-list catalog/lint_catalog_ref and non-dict docs must become errors,
+    never raise to the caller."""
+
+    def test_catalog_as_table_not_array_records_error_no_raise(self, tmp_path):
+        """`[catalog]` (table) instead of `[[catalog]]` (array) must not raise."""
+        # [catalog] produces a dict, not a list
+        toml = "[catalog]\nname = \"items\"\nfile = \"items.gd\"\npattern = \"r\"\n"
+        proj = _make_project(tmp_path, toml_content=toml)
+        # Must not raise; must return a Profile
+        prof = load(proj)
+        assert isinstance(prof, Profile)
+        # The shape violation must be recorded as an error
+        assert len(prof.errors) > 0, "Expected error for [catalog] table instead of [[catalog]] array"
+
+    def test_lint_catalog_ref_as_table_not_array_records_error_no_raise(self, tmp_path):
+        """`[lint_catalog_ref]` (table) instead of `[[lint_catalog_ref]]` must not raise."""
+        toml = "[lint_catalog_ref]\nuse_pattern = \"u\"\nvalid_pattern = \"v\"\n"
+        proj = _make_project(tmp_path, toml_content=toml)
+        prof = load(proj)
+        assert isinstance(prof, Profile)
+        assert len(prof.errors) > 0, "Expected error for [lint_catalog_ref] table instead of array"
+
+    def test_non_dict_docs_records_error_no_raise(self, tmp_path):
+        """docs = \"string\" (wrong type at top-level) must not raise; must record an error."""
+        # docs = "string" at the top level (before any section) → data["docs"] is a string
+        toml = "docs = \"not-a-table\"\n"
+        proj = _make_project(tmp_path, toml_content=toml)
+        prof = load(proj)
+        assert isinstance(prof, Profile)
+        assert len(prof.errors) > 0, "Expected error for docs = string instead of table"
+        # docs must be a dict (safe default) after the shape error
+        assert isinstance(prof.docs, dict)
+
+    def test_non_dict_project_section_records_error_no_raise(self, tmp_path):
+        """project = 42 (wrong type) must not raise."""
+        toml = "project = 42\n"
+        proj = _make_project(tmp_path, toml_content=toml)
+        prof = load(proj)
+        assert isinstance(prof, Profile)
+
+    def test_non_dict_engine_section_records_error_no_raise(self, tmp_path):
+        """engine = \"bad\" (wrong type) must not raise."""
+        toml = "engine = \"bad\"\n"
+        proj = _make_project(tmp_path, toml_content=toml)
+        prof = load(proj)
+        assert isinstance(prof, Profile)
+
+    def test_non_dict_tests_section_records_error_no_raise(self, tmp_path):
+        """tests = 99 (wrong type) must not raise."""
+        toml = "tests = 99\n"
+        proj = _make_project(tmp_path, toml_content=toml)
+        prof = load(proj)
+        assert isinstance(prof, Profile)
+
+
+# ---------------------------------------------------------------------------
+# 7. C15 companion — doctor and project_ground survive non-dict docs
+# ---------------------------------------------------------------------------
+
+class TestDoctorAndGroundWithNonDictDocs:
+    """If prof.docs is not a dict (due to a shape error), doctor.report() and
+    project_ground iteration must not raise AttributeError."""
+
+    @pytest.fixture()
+    def _non_dict_docs_profile(self, monkeypatch, tmp_path):
+        """Monkeypatch config.PROFILE to one whose docs field is a string (shape error)."""
+        (tmp_path / "project.godot").write_text("[gd_resource]\n", encoding="utf-8")
+        monkeypatch.setattr(config, "PROJECT_ROOT", tmp_path)
+        # Construct a Profile where docs is not a dict — simulates the unsafe state
+        # before the fix (the fix ensures load() always emits a dict, but we test
+        # the guard in doctor/project_ground independently).
+        prof = Profile(name="BadDocs", docs="not-a-dict")  # type: ignore[arg-type]
+        monkeypatch.setattr(config, "PROFILE", prof)
+        return prof
+
+    def test_doctor_report_does_not_raise_on_non_dict_docs(self, _non_dict_docs_profile):
+        from godot_mcp import doctor
+        result = doctor.report()
+        assert isinstance(result, str)
+
+    def test_list_docs_does_not_raise_on_non_dict_docs(self, _non_dict_docs_profile, tmp_path):
+        from godot_mcp import project_ground
+        result = project_ground.list_docs()
+        assert isinstance(result, str)
+
+    def test_convention_does_not_raise_on_non_dict_docs(self, _non_dict_docs_profile, tmp_path):
+        from godot_mcp import project_ground
+        result = project_ground.convention("anything")
+        assert isinstance(result, str)

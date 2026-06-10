@@ -143,3 +143,101 @@ Original scope (F-8) + all bucket-B audit findings added here before implementat
 - **README** — Tools + Live-editor-bridge tables per new tool.
 - **TEMP-project isolation** — all tests set `GODOT_PROJECT` to a temp dir before importing `config`; never touch capsulecastle.
 - **Verdict baseline** — Green today: `ci_smoke.py`, `client_check.py`, `smoke_phase2.py`, `smoke_phase3.py`. Red by probe (the Phase-1 target): outside-project `godot_lint`/`godot_check`/`godot_run_script`/`godot_lint_scene`/`patch_script`/`auto_fix`.
+
+---
+
+# Phase 6.5 — Audit hardening batch (bucket C)
+
+Added 2026-06-10 after the full-tree code audit. Source design: `docs/CODE_AUDIT_2026-06-10.md` (bucket C). Buckets A and B already shipped (`b0bbabd`, Phase 6). Bucket D is parked. This phase is correctness-first hardening sequenced **between Phase 6 and Phase 7** (feature work), per NOW.md.
+
+Conventions read: no `CLAUDE.md`/`CONVENTIONS.md`/`AGENTS.md` at the repo root — matched the surrounding source (every MCP tool is a thin `@mcp.tool()` wrapper in `server.py` delegating to a module fn that graceful-degrades to a string and never raises to the agent; all file paths route through `config.resolve_project_path`).
+
+Verification command: `.venv/Scripts/python.exe -m pytest tests/ -q` (baseline at planning time: **162 passed, 7 skipped**, ruff/mypy clean). The 7 skips are editor/binary-gated. Each phase below ends green on that command plus `ruff check src/godot_mcp tests` and `mypy src/godot_mcp`.
+
+Security invariants every phase preserves (already true in the tree, do not regress): no `shell=True`; path-taking tools resolve through `config.resolve_project_path`; tests never touch the real capsulecastle project — they create a tmp project (`project.godot` only) and `monkeypatch.setattr(config, "PROJECT_ROOT", tmp)` (and `GODOT_MCP_PROFILE` / `GODOT_MCP_DATA` where the unit under test reads them), per the existing `tests/test_containment.py` and `tests/test_profile_robustness.py` fixtures.
+
+## Summary
+Six phases covering bucket C: edit-path integrity (C1–C7), validation correctness (C8–C14), the import-time crash class (C15–C16), and grounding-data correctness (C17–C26). Priority items from NOW.md (C1–C5, C8–C10, C15–C21) are load-bearing; lower-priority C items (C6/C7, C11–C14, C22–C31) ride along inside the phase that already touches their file, only where cheap and decision-free. The two H-severity import-time crashers (C15/C16) and the H-severity grounding-data gaps (C17/C18) anchor the ordering.
+
+## Blockers / Open Questions
+None of the priority items require a design decision the audit hasn't already made; each names the fix. The items below are genuine decisions the audit leaves open. They are **not** blockers for starting Phase 1 (C5 has a clear directive); they are flagged where they land:
+
+- **C5 verdict vocabulary (Phase 2 decision, not a blocker):** the audit says give `check_script` "a distinguishable UNAVAILABLE verdict and report it separately," but does not fix the surfaced string. The implementer must pick the exact verdict prefix (e.g. `UNAVAILABLE` vs `ENV-ERROR`) and how `write_script` rolls back vs reports on it. Rule: an environment failure (Godot missing / `--check-only` timed out) must NOT say "WRITE ROLLED BACK — script does not parse." Whether the write is kept or rolled back when the checker is unavailable is the open call — recommend: roll back AND label it an environment failure, since an unchecked write violates the parse-guarantee. Confirm with the human before implementing if unsure.
+- **C7 concurrency guard (Phase 1, lower-priority, decision-gated):** "a per-path lock plus an mtime check on rollback." A per-path lock is new shared state (see Cross-cutting). If the lock design is non-trivial, ship the mtime check alone in Phase 1 and park the lock — do not invent a locking scheme. Flagged, not blocking.
+- **C20 circuit-breaker scope (Phase 5, decision-gated):** "process-wide network-down flag after the first connection failure (distinct from 404)." Whether the flag ever resets within a process lifetime is unspecified. Recommend: latch for the process (a restart clears it), since a doc backfill that went offline once is unlikely to recover mid-session and the cost of re-probing is the 8s stall C20 exists to kill. Confirm if a reset is wanted.
+
+## Phase 1 — Crash class: import-time + config-write safety *(C15, C16)*
+**Goal:** one bad `godot-mcp.toml` value or one corrupt `.mcp.json` can never (a) stop the server from booting or (b) destroy other MCP-server registrations.
+**Files:** `src/godot_mcp/profile.py` (shape-validate `catalog`/`lint_catalog_ref`/`docs`/`project`/`engine`/`tests` into `Profile.errors` instead of raising — C15); `src/godot_mcp/doctor.py` + `src/godot_mcp/project_ground.py` (isinstance-guard `prof.docs.values()` iteration so a non-dict `docs` can't kill doctor — C15 companion); `src/godot_mcp/init.py` (`_write_mcp_json`: refuse to write + report the parse error on a corrupt/non-dict `.mcp.json`; guard `data["mcpServers"]` non-dict — C16). Extend `tests/test_profile_robustness.py`; new `tests/test_init_mcp_json.py` (covers the zero-coverage `.mcp.json` merge — also closes part of audit D7).
+**Verification:** pytest, fully offline:
+  - C15: a `godot-mcp.toml` with `[catalog]` (table, not `[[catalog]]` array) → `profile.load` returns a Profile with a populated `errors` list and does NOT raise at import; `doctor.report()` shows a FAIL line and not "All good."
+  - C15 companion: a profile with non-dict `docs` → `doctor.report()` and `project_ground` iteration return cleanly (no AttributeError).
+  - C16: a `.mcp.json` that is invalid JSON, and one whose top level is a JSON array → `_write_mcp_json` refuses, reports the parse error, and leaves the original file byte-identical (assert other server entries survive).
+**Exit criteria:** all new tests green; full suite green; ruff/mypy clean. Import of `godot_mcp.config` against a malformed profile no longer raises (assert via a subprocess or `importlib.reload` under the monkeypatched env).
+**Blockers:** none.
+
+## Phase 2 — Validation correctness + env-vs-parse verdict *(C5, C8–C14)*
+**Goal:** `godot_validate`/`check_script`/`run_tests` stop producing false-FAILs and stop misattributing environment failures as parse failures (NOW.md stance rule 7 — retry elimination).
+**Files:** `src/godot_mcp/runner.py` (UNAVAILABLE verdict from `check_script` + `_run` — C5; restrict `_FAIL_MARKERS` scan to engine-error-shaped lines or post-start-marker — C8; pass `res://`-normalized path to `ResourceLoader.load()` — C9; harness-missing actionable message — C10; `try/finally` around the `--log-file` temp + catch `OSError` — C11; pass `str(abs_path)` to `--script` — C12; close-fd-in-own-try/finally in `run_temp_probe` — C13); `src/godot_mcp/config.py` (refuse the `cmd /c` raw-shim fallback in `resolve_godot` — C14); `src/godot_mcp/edit.py` (C5 consumer side — report UNAVAILABLE distinctly, do not say "does not parse"). New tests: `tests/test_runner_verdicts.py` (extend `tests/test_validate_harness.py` where it fits).
+**Verification:** pytest, offline (monkeypatch `runner._run` / `config.resolve_godot` to return canned dicts — no real Godot):
+  - C5: stub `_run` to return `{"rc": None, "err": "Godot binary not found ..."}` → `check_script` returns an UNAVAILABLE-class verdict; `write_script` reports an environment failure, NOT "WRITE ROLLED BACK — script does not parse".
+  - C8: a log containing an autoload's `"could not find save file"` line plus `VALIDATE_OK` → `_validate_verdict` returns PASS (the benign line no longer false-FAILs).
+  - C9: assert the path handed to the harness/loader is `res://...as_posix()` form for a backslash-absolute and a bare-relative input.
+  - C10: monkeypatch `config.DATA_DIR` to a dir with no `validate_script.gd` → `validate_with_autoloads` returns "harness missing at <path>", not "No VALIDATE_* marker".
+  - C11: stub `subprocess.run` to raise `PermissionError` → `_run` returns the standard err dict and the temp log is gone (assert the file does not exist).
+  - C14: a `GODOT_BIN` shim path resolving to the `cmd /c` fallback → `resolve_godot` refuses with "set GODOT_BIN to the .exe".
+**Exit criteria:** all new tests green; full suite green; ruff/mypy clean. `_validate_verdict` keeps its existing PASS/FAIL contract for real error logs (regression-asserted).
+**Blockers:** C5 verdict-string decision (see Blockers). C8 approach (line-shape filter vs harness start-marker) is the implementer's call — start-marker is more robust but touches `data/validate_script.gd` (Cross-cutting: the harness is a tracked, version-pinned artifact).
+
+## Phase 3 — Edit-path integrity (the rollback promise) *(C1–C4, C6, C7-partial)*
+**Goal:** `write_script`/`patch_script`/`auto_fix` never leave the project non-parsing, never mangle CRLF or non-UTF8 bytes, and never silently corrupt strings.
+**Files:** `src/godot_mcp/edit.py` (write_script rollback try/except — C1; CRLF detect+preserve — C2; strict UTF-8 decode + clean refusal — C3; string-aware auto_fix — C4; created-dir cleanup on rollback — C6; mtime check on rollback — C7-partial). New tests: `tests/test_edit_integrity.py`.
+**Verification:** pytest unit tests against a tmp project, no Godot binary needed (monkeypatch `runner.check_script` to a stub for the rollback/verdict paths):
+  - C1: stub `check_script` to raise → assert the original bytes are restored on disk and the function returns a clean message, not a traceback.
+  - C2: write a file with CRLF line endings, patch one line → assert the other lines keep CRLF (byte-compare).
+  - C3: write a file with invalid UTF-8 bytes, call `auto_fix`/`patch_script` → assert a clean "refused: non-UTF8" message and the bytes on disk are byte-identical (no U+FFFD persisted).
+  - C4: a `var x = 5` inside a triple-quoted string is left untouched by `auto_fix`; a real `var x = 5` statement still gets `:=`.
+  - C6: a write that rolls back a newly-created file removes the empty parent dirs it created.
+**Exit criteria:** all new tests green; full suite still 162+ green; ruff/mypy clean; no behavior change to the happy path (an existing passing write test still passes).
+**Blockers:** C7 lock decision (see Blockers) — ship mtime check, park the lock if non-trivial. C5 lives in Phase 2 (it spans `edit.py` + `runner.py` and depends on the new `check_script` verdict, so it is sequenced after the runner verdict change).
+
+## Phase 4 — Grounding data: engine API indexing + search ranking *(C17, C21, C22)*
+**Goal:** `godot_search`/`godot_class`/`godot_member` surface the utility functions, global enums, and global constants the dump already contains, and rank member/constant/enum hits so exact matches aren't buried below truncation (NOW.md stance rule 7).
+**Files:** `src/godot_mcp/engine_api.py` (index `utility_functions`/`global_enums`/`global_constants` in `_load` and surface them in search/class/member — C17; score member hits exact/prefix/substring + search constants and enums — C21; `get_class` char budget + drill-down tail, builtin `(get None, set None)` cleanup, `_cache` reload-on-redump, JSONDecodeError → "re-run dump_api" message — C22, only where cheap). Extend `tests/test_engine_api.py`.
+**Verification:** pytest against a small fixture `extension_api.json` (a trimmed dump checked into `tests/fixtures/` carrying a couple of `utility_functions`, a `global_enums` entry like `Key`, and a class with a member matching a search term) — monkeypatch `config.EXTENSION_API` to it:
+  - C17: `search("lerp")` returns the utility function; `godot_class("Key")` resolves (global enum); a global constant is findable.
+  - C21: `search("position")` returns `Node2D.position` (or the fixture equivalent) ranked above substring class hits; `search("NOTIFICATION_READY")` and an enum name return matches.
+  - C22 (if done): `get_class` on a large fixture class is capped with a "use godot_member" tail.
+**Exit criteria:** new tests green; full suite green; ruff/mypy clean. Existing engine_api tests (inherited-member walk, builtin search) still pass.
+**Blockers:** none. C22 is opt-in polish — skip any sub-item that isn't a clean mechanical change.
+
+## Phase 5 — Grounding data: docs fetch + cache correctness *(C18, C19, C20)*
+**Goal:** doc descriptions stop silently vanishing on `.0` engine builds, the XML cache is version-keyed and crash-safe, and offline doc walks stop costing ~8s per ancestor every restart.
+**Files:** `src/godot_mcp/docs.py` (omit patch component when 0 in `_version_tag` — C18; cache under `godot_docs/<tag>/`, temp-write-then-rename, unlink on parse failure — C19; process-wide network-down latch distinct from 404 — C20). New `tests/test_docs.py` (closes part of audit D7 — `docs.py` is currently zero-coverage).
+**Verification:** pytest, offline (monkeypatch `urllib.request.urlopen` to a fake; monkeypatch `config.DATA_DIR`/`config.EXTENSION_API` to a tmp fixture):
+  - C18: a fake `extension_api.json` header with `version_patch=0` → `_version_tag()` emits `X.Y-stable` (no `.0`); a non-zero patch still emits `X.Y.Z-stable`.
+  - C19: cache writes land under `godot_docs/<tag>/<Class>.xml`; a urlopen returning malformed XML leaves no file behind (assert no partial cache file); a second call for a different tag does not read the first tag's cache.
+  - C20: a fake urlopen raising a connection error (not HTTP 404) sets the network-down flag; a subsequent `class_docs` call for a different class does NOT attempt a network fetch (assert urlopen called once). A 404 does NOT trip the latch.
+**Exit criteria:** new tests green; full suite green; ruff/mypy clean.
+**Blockers:** C20 reset-scope decision (see Blockers) — recommend latch-for-process.
+
+## Phase 6 — Doctor drift + remaining grounding parsers *(C17-doctor, C23–C31 where cheap)*
+**Goal:** doctor reports artifact drift (binary-vs-dump version, missing harness) per NOW.md stance rule 8, and the remaining lower-priority parser/correctness items ride along where they're decision-free.
+**Files:** `src/godot_mcp/doctor.py` (check `data/validate_script.gd` exists; compare dump header against `resolve_godot() --version`; fix the substring version match so API `4.1` no longer passes against feature `4.10` — C17 doctor additions); `src/godot_mcp/project_ground.py` + `src/godot_mcp/catalogs.py` (fingerprint over (relpath, mtime) pairs not (count, mtime_sum); hoist the duplicated `_gd_signature` to one shared helper — C23); `src/godot_mcp/scene.py` (quote-state tracking in the `.tscn` sectioner — C24, **only if a focused test can prove the phantom-node fix**); plus the cheap lows (C25 BOM via `utf-8-sig`, C26 multiline-string state in `refs.py`, C27 trailing-comment lint scan, C28 `--test-filter` docstring caveat, C30 doctor stale-config reload note, C31 `copytree` addon install + uninstall removes the bridge addon) **each only where it is a clean, decision-free change**. Add focused tests per item touched.
+**Verification:** pytest, offline:
+  - C17-doctor: monkeypatch `config.DATA_DIR` with no harness → doctor shows a FAIL for the missing harness; a dump header `4.1` against project features `4.10` → version-match line is FAIL (not a false OK).
+  - C23: rename a project `class_name` file (preserving count and mtime-sum) → `project_classes()` returns the new path, not the stale one.
+  - C24 (if done): a `.tscn` with a multiline string value whose content starts with `[node ...]` → the sectioner does not emit a phantom node.
+  - Any other C25–C31 item done gets one focused assertion.
+**Exit criteria:** new tests green; full suite green; ruff/mypy clean. Doctor still reports "All good." on a healthy tmp project.
+**Blockers:** C24 quote-state tracking is the only non-trivial parser change here — if it can't be made decision-free and test-provable in one focused pass, park it to a follow-up and ship the doctor + C23 + cheap-lows portion. C29 (async tool wrapping) is explicitly out of scope for 6.5 (it touches the FastMCP event-loop model and is a behavior decision, not a hardening fix) — leave only the docstring caveat (C28 family).
+
+## Cross-cutting concerns
+- **Import-time crash surface (C15)** — `config.py:20` calls `profile.load(PROJECT_ROOT)` at module import, so any exception in `profile.load` kills every tool and doctor before it can run. C15 must convert all shape violations into `Profile.errors` (never raise). This touches the single load-bearing import path shared by every module; verify with an import-under-malformed-profile test, not just a `load()` unit test. Lands Phase 1. No migration; rollback is reverting the phase commit.
+- **`.mcp.json` is shared multi-server state (C16)** — the file holds every MCP server the user has registered, not just `godot-grounding`. The current silent `data = {}` fallback destroys all of them on a parse error. The fix must be non-destructive (refuse + report, leave the file untouched). This is user-data integrity, not internal state. Lands Phase 1. Rollback: revert; no data migration needed since the fix only adds a refusal path.
+- **`data/validate_script.gd` is a tracked, version-pinned artifact** — C8 (start-marker approach) and C10 (harness-missing message) both touch the harness contract. If C8 adds a start marker the harness must print, the marker string is a contract between `data/validate_script.gd` and `runner._validate_verdict`; change both in the same commit. The harness runs by absolute path from `config.DATA_DIR` and is shared by `godot_validate` and (later) Phases 7/8 — do not change its output format without updating every parser. Lands Phase 2.
+- **`extension_api.json` schema assumptions (C17)** — indexing three new top-level buckets (`utility_functions`, `global_enums`, `global_constants`) assumes their shape in the dump. Pin the fixture used in tests to the real 4.6.2 dump shape; if a future re-dump changes the schema, the doctor binary-vs-dump check (also C17) is the drift alarm. No migration; the dump is regenerated by `scripts/dump_api.ps1`, out of scope here. Lands Phases 4 (indexing) + 6 (doctor drift check).
+- **Docs cache layout change (C19)** — moving from `godot_docs/<Class>.xml` to `godot_docs/<tag>/<Class>.xml` orphans the existing flat cache. This is a disposable derived cache (re-fetched on demand), so no migration is required, but note it: after this ships, the old flat files under `data/godot_docs/` are dead and can be deleted in the same commit or left to rot harmlessly. Confirm `data/godot_docs/` is gitignored/untracked derived data (not committed) before relying on that. Lands Phase 5.
+- **`_gd_signature` duplication (C23)** — the helper is currently copy-pasted in `project_ground.py` and `catalogs.py` with separately-maintained skip-dir sets. Hoisting to one shared helper changes both call sites; the fingerprint change (count,mtime_sum → (relpath,mtime) pairs) changes the cache-invalidation contract, so a stale cache from before the change should be treated as a miss (re-scan), not trusted. Lands Phase 6.
+- **Verdict vocabulary (C5)** — adding an UNAVAILABLE verdict class changes the strings `write_script`/`check_script`/`godot_validate` return to the agent. Agent-facing string changes are low-risk here (no external users per NOW.md stance) but the new verdict must be distinguishable from both OK and the parse-FAIL string so the agent doesn't retry-loop. Lands Phase 2.
+- **No new MCP tools, no grant-list ripple** — bucket C is pure hardening; it adds no `@mcp.tool()`. The agent grant lists (`godot-editor.md.tmpl`, `godot-editor.toml.tmpl`, `SKILL.md.tmpl`) and the README tool table do NOT change in 6.5. The exact-roster `ci_smoke.py` assertion stays green unchanged. (Naming/rename work is Phase 6.6, a separate thread.)

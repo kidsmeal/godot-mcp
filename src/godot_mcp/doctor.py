@@ -64,10 +64,11 @@ def report() -> str:
             rel = scene[len("res://"):] if scene.startswith("res://") else scene
             add((root / rel).exists(), f"test scene ({label})", scene)
 
-    missing_docs = [v for v in prof.docs.values() if not (root / v).exists()]
-    add(not missing_docs, "profile docs exist", "missing " + ", ".join(missing_docs) if missing_docs else f"{len(prof.docs)} present")
+    docs_dict = prof.docs if isinstance(prof.docs, dict) else {}
+    missing_docs = [v for v in docs_dict.values() if not (root / v).exists()]
+    add(not missing_docs, "profile docs exist", "missing " + ", ".join(missing_docs) if missing_docs else f"{len(docs_dict)} present")
 
-    missing_cat = [c["file"] for c in prof.catalogs if c.get("file") and not (root / c["file"]).exists()]
+    missing_cat = [c["file"] for c in prof.catalogs if isinstance(c, dict) and c.get("file") and not (root / c["file"]).exists()]
     add(not missing_cat, "profile catalog files exist", "missing " + ", ".join(missing_cat) if missing_cat else "all present")
 
     try:

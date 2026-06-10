@@ -54,6 +54,9 @@ def _validate_catalog_specs(catalogs: list[dict], catalog_refs: list[dict]) -> l
     errors: list[str] = []
     required_catalog_keys = {"name", "file", "pattern"}
     for i, spec in enumerate(catalogs):
+        if not isinstance(spec, dict):
+            errors.append(f"catalog[{i}] is not a table (got {type(spec).__name__})")
+            continue
         missing = required_catalog_keys - spec.keys()
         if missing:
             label = spec.get("name") or f"index {i}"
@@ -62,6 +65,9 @@ def _validate_catalog_specs(catalogs: list[dict], catalog_refs: list[dict]) -> l
             )
     required_ref_keys = {"use_pattern", "valid_pattern"}
     for i, ref in enumerate(catalog_refs):
+        if not isinstance(ref, dict):
+            errors.append(f"lint_catalog_ref[{i}] is not a table (got {type(ref).__name__})")
+            continue
         missing = required_ref_keys - ref.keys()
         if missing:
             errors.append(
@@ -82,13 +88,42 @@ def load(project_root: Path) -> Profile:
             errors.append(f"TOML parse error in {path.name}: {exc}")
             data = {}
 
-    proj, eng, tests = data.get("project", {}), data.get("engine", {}), data.get("tests", {})
-    docs = data.get("docs")
-    if docs is None:
+    raw_proj = data.get("project", {})
+    raw_eng = data.get("engine", {})
+    raw_tests = data.get("tests", {})
+    proj = raw_proj if isinstance(raw_proj, dict) else {}
+    eng = raw_eng if isinstance(raw_eng, dict) else {}
+    tests = raw_tests if isinstance(raw_tests, dict) else {}
+    if not isinstance(raw_proj, dict) and raw_proj is not None:
+        errors.append(f"[project] must be a table, got {type(raw_proj).__name__}; using defaults")
+    if not isinstance(raw_eng, dict) and raw_eng is not None:
+        errors.append(f"[engine] must be a table, got {type(raw_eng).__name__}; using defaults")
+    if not isinstance(raw_tests, dict) and raw_tests is not None:
+        errors.append(f"[tests] must be a table, got {type(raw_tests).__name__}; using defaults")
+
+    raw_docs = data.get("docs")
+    if raw_docs is None:
+        docs: dict[str, str] = {k: v for k, v in _DEFAULT_DOCS.items() if (project_root / v).exists()}
+    elif isinstance(raw_docs, dict):
+        docs = raw_docs
+    else:
+        errors.append(f"[docs] must be a table, got {type(raw_docs).__name__}; using defaults")
         docs = {k: v for k, v in _DEFAULT_DOCS.items() if (project_root / v).exists()}
 
-    catalogs = data.get("catalog", [])
-    catalog_refs = data.get("lint_catalog_ref", [])
+    raw_catalogs = data.get("catalog", [])
+    raw_catalog_refs = data.get("lint_catalog_ref", [])
+    catalogs: list[dict]
+    catalog_refs: list[dict]
+    if isinstance(raw_catalogs, list):
+        catalogs = raw_catalogs
+    else:
+        errors.append(f"'catalog' must be an array of tables ([[catalog]]), got {type(raw_catalogs).__name__}; ignoring")
+        catalogs = []
+    if isinstance(raw_catalog_refs, list):
+        catalog_refs = raw_catalog_refs
+    else:
+        errors.append(f"'lint_catalog_ref' must be an array of tables ([[lint_catalog_ref]]), got {type(raw_catalog_refs).__name__}; ignoring")
+        catalog_refs = []
     errors.extend(_validate_catalog_specs(catalogs, catalog_refs))
 
     return Profile(

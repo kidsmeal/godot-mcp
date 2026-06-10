@@ -80,8 +80,13 @@ def _venv_python() -> Path:
     return REPO / ".venv" / sub / exe
 
 
-def _write_mcp_json(root: Path, godot_bin: str) -> Path:
-    """Create or merge the project's .mcp.json with the godot-grounding server entry."""
+def _write_mcp_json(root: Path, godot_bin: str) -> Path | str:
+    """Create or merge the project's .mcp.json with the godot-grounding server entry.
+
+    Returns the Path on success.  Returns an error string (and leaves the file
+    byte-identical) when the existing .mcp.json is corrupt or has a non-dict
+    top level — never silently clobbers other MCP server registrations.
+    """
     mcp_path = root / ".mcp.json"
     entry = {
         "command": str(_venv_python()),
@@ -90,12 +95,20 @@ def _write_mcp_json(root: Path, godot_bin: str) -> Path:
     }
     data: dict = {}
     if mcp_path.exists():
+        raw = mcp_path.read_text(encoding="utf-8-sig")
+        if not raw.strip():
+            return f"Refused: {mcp_path} is empty or blank — fix or delete it first"
         try:
-            data = json.loads(mcp_path.read_text(encoding="utf-8-sig"))
-        except Exception:
-            data = {}
-    if not isinstance(data, dict):
-        data = {}
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            return f"Refused: {mcp_path} contains invalid JSON ({exc}); fix it first to avoid losing other server registrations"
+        if not isinstance(parsed, dict):
+            return f"Refused: {mcp_path} top-level value is {type(parsed).__name__}, expected an object; fix it first"
+        data = parsed
+
+    mcp_servers = data.get("mcpServers")
+    if mcp_servers is not None and not isinstance(mcp_servers, dict):
+        return f"Refused: {mcp_path} 'mcpServers' value is {type(mcp_servers).__name__}, expected an object; fix it first"
     data.setdefault("mcpServers", {})["godot-grounding"] = entry
     mcp_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8", newline="\n")
     return mcp_path
@@ -172,8 +185,11 @@ def main(argv: list[str] | None = None) -> int:
         dst.write_text(_render(tpl, name, str(root)), encoding="utf-8", newline="\n")
         print(f"+ wrote {dst.relative_to(root)}")
 
-    mcp_path = _write_mcp_json(root, godot_bin)
-    print(f"+ wrote/merged {mcp_path.name} (godot-grounding server)")
+    mcp_result = _write_mcp_json(root, godot_bin)
+    if isinstance(mcp_result, str):
+        print(f"! {mcp_result}")
+    else:
+        print(f"+ wrote/merged {mcp_result.name} (godot-grounding server)")
 
     addon_src = REPO / "addon" / "godot_grounding_bridge"
     if addon_src.exists():
