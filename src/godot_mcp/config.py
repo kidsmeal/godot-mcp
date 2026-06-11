@@ -89,6 +89,10 @@ def resolve_godot() -> list[str]:
             m = re.search(r'"([^"]+\.exe)"', shim)
             if m and Path(m.group(1)).exists():
                 return [m.group(1)]
-            return ["cmd", "/c", found]
+            # C14: refuse the cmd /c raw-shim fallback — it relies on shell=True
+            # semantics via CreateProcess, is fragile, and bypasses subprocess
+            # security invariants.  Return the shim path alone so the caller
+            # gets a clear FileNotFoundError rather than a silent wrong invocation.
+            return [found]
         return [found]
     return [GODOT_BIN]

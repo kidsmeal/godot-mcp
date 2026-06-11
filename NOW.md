@@ -22,7 +22,8 @@ Next physical action:
 - [x] Phase 6 plan amended with bucket B (B1–B10).
 - [x] Phase 6 shipped — bridge hardening + auth + protocol fixes. 162 tests green, ruff/mypy clean.
 - [x] Phase 6.5 plan written (6 phases, C15/C16 first). Phase 6.5-P1 (crash class) shipped — 185 tests green.
-- [ ] **Phase 6.5-P2** — validation correctness + env-vs-parse verdict (C5, C8–C14). First action: gantry:build Phase 2.
+- [x] Phase 6.5-P2 shipped — validation correctness + env-vs-parse verdict (C5, C8–C14). 203 tests green.
+- [ ] **Phase 6.5-P3** — edit-path integrity (C1–C4, C6). First action: gantry:build Phase 3.
 
 Rule: when you finish a step, check it off and write the next single tiny step. Do not start another thread until this one ships or you consciously move it to the Queue.
 

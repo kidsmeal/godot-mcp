@@ -14,6 +14,11 @@ func _initialize() -> void:
 		print("VALIDATE_NOARG")
 		quit(2)
 		return
+	# VALIDATE_START marks the boundary between engine/autoload boot noise and
+	# the actual load attempt.  runner._validate_verdict only scans for error
+	# markers *after* this line, so benign autoload warnings (e.g. "could not
+	# find save file") do not produce false FAILs.
+	print("VALIDATE_START")
 	var res: Resource = ResourceLoader.load(args[0], "Script", ResourceLoader.CACHE_MODE_IGNORE)
 	print("VALIDATE_NULL" if res == null else "VALIDATE_OK")
 	quit(0)

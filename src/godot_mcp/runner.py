@@ -39,29 +39,32 @@ def _run(extra_args: list[str], timeout: int) -> dict:
     )
     rc, timed_out, pipe_err = None, False, ""
     try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout,
-            cwd=str(config.PROJECT_ROOT),
-            stdin=subprocess.DEVNULL,
-        )
-        rc, pipe_err = proc.returncode, proc.stderr or ""
-        pipe_out = proc.stdout or ""
-    except subprocess.TimeoutExpired as e:
-        timed_out = True
-        pipe_out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
-        pipe_err = e.stderr.decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
-    except FileNotFoundError:
-        _safe_unlink(log_path)
-        return {"rc": None, "out": "", "err": f"Godot binary not found ({cmd[0]}). Set GODOT_BIN to the .exe.", "timeout": False}
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout,
+                cwd=str(config.PROJECT_ROOT),
+                stdin=subprocess.DEVNULL,
+            )
+            rc, pipe_err = proc.returncode, proc.stderr or ""
+            pipe_out = proc.stdout or ""
+        except subprocess.TimeoutExpired as e:
+            timed_out = True
+            pipe_out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            pipe_err = e.stderr.decode("utf-8", "replace") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        except FileNotFoundError:
+            return {"rc": None, "out": "", "err": f"Godot binary not found ({cmd[0]}). Set GODOT_BIN to the .exe.", "timeout": False}
+        except OSError as e:
+            return {"rc": None, "out": "", "err": f"OS error launching Godot: {e}", "timeout": False}
 
-    log_text = config.read_text(Path(log_path)) or ""
-    _safe_unlink(log_path)
-    out = log_text if log_text.strip() else pipe_out
-    return {"rc": rc, "out": out, "err": pipe_err, "timeout": timed_out}
+        log_text = config.read_text(Path(log_path)) or ""
+        out = log_text if log_text.strip() else pipe_out
+        return {"rc": rc, "out": out, "err": pipe_err, "timeout": timed_out}
+    finally:
+        _safe_unlink(log_path)
 
 
 def _safe_unlink(path: str) -> None:
@@ -148,7 +151,7 @@ def run_script(script_path: str, timeout: int = 120) -> str:
             f"(this one extends {ext}). Running other scripts via --script can pop a blocking editor "
             f"dialog. Use godot_check to parse-check it, or godot_run_tests for the suite."
         )
-    r = _run(["--script", script_path], timeout)
+    r = _run(["--script", str(abs_path)], timeout)
     if r["timeout"]:
         return f"TIMED OUT after {timeout}s.\n{_tail(r['out'] or r['err'])}"
     if r["rc"] is None:
@@ -167,9 +170,9 @@ def check_script(script_path: str, timeout: int = 60) -> str:
         return f"Refused: {script_path} resolves outside the project root."
     r = _run(["--check-only", "--script", script_path], timeout)
     if r["timeout"]:
-        return f"TIMED OUT after {timeout}s."
+        return f"UNAVAILABLE — check-only timed out after {timeout}s (Godot may be unavailable)."
     if r["rc"] is None:
-        return r["err"]
+        return f"UNAVAILABLE — {r['err']}"
     if r["rc"] == 0 and not r["err"].strip():
         return f"OK  {script_path} parses cleanly."
     msg = (r["err"] or r["out"]).strip()
@@ -183,9 +186,10 @@ def check_script(script_path: str, timeout: int = 60) -> str:
 # Failure markers to scan for in the engine log (case-insensitive).
 # These are locked against Godot 4.x behaviour: ResourceLoader.load() returns
 # non-null even on a compile error, so the log is the authoritative signal.
+# NOTE: VALIDATE_NULL and VALIDATE_NOARG are harness markers, not error-line
+# markers; they are matched separately in _validate_verdict before the scan.
 _FAIL_MARKERS = re.compile(
-    r"VALIDATE_NULL|VALIDATE_NOARG"
-    r"|Parse Error"
+    r"Parse Error"
     r"|SCRIPT ERROR"
     r"|Compile Error"
     r"|not declared"
@@ -205,6 +209,12 @@ def _validate_verdict(log_text: str) -> tuple[bool, str]:
       VALIDATE_NULL                     → FAIL (resource could not load)
       VALIDATE_NOARG                    → FAIL (caller bug — no path arg)
       No VALIDATE_* marker at all       → FAIL (harness did not complete)
+
+    If the log contains a VALIDATE_START marker, only lines appearing after
+    that marker are scanned for failure markers.  Lines before VALIDATE_START
+    are engine boot noise (autoload warnings, theme-resource notices, etc.) and
+    must not cause false FAILs.  Logs without VALIDATE_START are scanned in
+    full for backward compatibility.
     """
     has_ok = "VALIDATE_OK" in log_text
     has_null = bool(re.search(r"VALIDATE_NULL", log_text))
@@ -219,11 +229,18 @@ def _validate_verdict(log_text: str) -> tuple[bool, str]:
     if not has_ok:
         return False, "FAIL  No VALIDATE_* marker in engine log — harness did not complete"
 
-    # has_ok is True — now check for error lines
-    fail_match = _FAIL_MARKERS.search(log_text)
+    # has_ok is True — scan only the post-start-marker region when available.
+    # VALIDATE_START is printed by the harness immediately before the load call,
+    # so any error-shaped lines before it are engine/autoload boot noise.
+    if "VALIDATE_START" in log_text:
+        _, _, post_start = log_text.partition("VALIDATE_START")
+        scan_text = post_start
+    else:
+        scan_text = log_text
+
+    fail_match = _FAIL_MARKERS.search(scan_text)
     if fail_match:
-        # Extract context around the first failure line
-        lines = log_text.splitlines()
+        lines = scan_text.splitlines()
         fail_lines = [ln for ln in lines if _FAIL_MARKERS.search(ln)]
         detail = "\n".join(fail_lines[:10])
         return False, f"FAIL  Script produced errors:\n{detail}"
@@ -249,7 +266,17 @@ def validate_with_autoloads(script_path: str, timeout: int = 60) -> str:
         return f"Not found: {script_path}"
 
     harness = config.DATA_DIR / "validate_script.gd"
-    r = _run(["--script", str(harness), "--", script_path], timeout)
+    if not harness.exists():
+        return f"Harness missing at {harness} — re-install the plugin or run `git checkout data/validate_script.gd`."
+
+    # C9: pass res://-normalized path to ResourceLoader.load() so Godot can
+    # resolve it inside the project.  Absolute and backslash paths are not
+    # understood by ResourceLoader — only res:// paths are portable.
+    project_root = config.PROJECT_ROOT.resolve()
+    rel = abs_path.resolve().relative_to(project_root)
+    harness_arg = "res://" + rel.as_posix()
+
+    r = _run(["--script", str(harness), "--", harness_arg], timeout)
 
     if r["timeout"]:
         return f"TIMED OUT after {timeout}s.\n{_tail(r['out'] or r['err'])}"
@@ -275,9 +302,13 @@ def run_temp_probe(
     Returns the _run dict: {rc, out, err, timeout}.
     """
     fd, gd_path = tempfile.mkstemp(suffix=".gd", prefix="godot_mcp_probe_")
+    # C13: close the fd in its own try/finally so an os.write failure cannot
+    # leak the file descriptor — the outer finally then handles file cleanup.
     try:
-        os.write(fd, source.encode("utf-8"))
-        os.close(fd)
+        try:
+            os.write(fd, source.encode("utf-8"))
+        finally:
+            os.close(fd)
         extra: list[str] = ["--script", gd_path]
         if user_args:
             extra += ["--"] + user_args

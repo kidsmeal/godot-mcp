@@ -52,6 +52,10 @@ def write_script(res_path: str, content: str, enforce_conventions: bool = False)
                 target.unlink()
             except OSError:
                 pass
+        # C5: distinguish an environment failure (Godot unavailable) from a
+        # real parse failure so the agent does not retry on an infra problem.
+        if check.startswith("UNAVAILABLE"):
+            return f"WRITE ROLLED BACK — Godot unavailable (could not verify parse):\n{check}\n\n(Restored previous state; no change kept.)"
         return f"WRITE ROLLED BACK — script does not parse:\n{check}\n\n(Restored previous state; no change kept.)"
 
     out = [f"WROTE {res_path} ({'updated' if existed else 'created'}) — parses cleanly."]
