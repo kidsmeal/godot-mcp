@@ -1,0 +1,226 @@
+{
+  "header": {
+    "version_major": 4,
+    "version_minor": 6,
+    "version_patch": 2,
+    "version_status": "stable",
+    "version_build": "official",
+    "version_full_name": "Godot Engine v4.6.2.stable.official",
+    "precision": "single"
+  },
+  "global_constants": [
+    {"name": "SPKEY", "value": 16777216}
+  ],
+  "global_enums": [
+    {
+      "name": "Side",
+      "is_bitfield": false,
+      "values": [
+        {"name": "SIDE_LEFT", "value": 0},
+        {"name": "SIDE_TOP", "value": 1},
+        {"name": "SIDE_RIGHT", "value": 2},
+        {"name": "SIDE_BOTTOM", "value": 3}
+      ]
+    },
+    {
+      "name": "Key",
+      "is_bitfield": false,
+      "values": [
+        {"name": "KEY_NONE", "value": 0},
+        {"name": "KEY_ESCAPE", "value": 16777217},
+        {"name": "KEY_ENTER", "value": 16777220}
+      ]
+    }
+  ],
+  "utility_functions": [
+    {
+      "name": "lerp",
+      "return_type": "Variant",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 12345,
+      "arguments": [
+        {"name": "from", "type": "Variant"},
+        {"name": "to", "type": "Variant"},
+        {"name": "weight", "type": "float"}
+      ]
+    },
+    {
+      "name": "sin",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 67890,
+      "arguments": [
+        {"name": "angle_rad", "type": "float"}
+      ]
+    },
+    {
+      "name": "lerp_angle",
+      "return_type": "float",
+      "category": "math",
+      "is_vararg": false,
+      "hash": 11111,
+      "arguments": [
+        {"name": "from", "type": "float"},
+        {"name": "to", "type": "float"},
+        {"name": "weight", "type": "float"}
+      ]
+    }
+  ],
+  "builtin_classes": [
+    {
+      "name": "Color",
+      "members": [
+        {"name": "r", "type": "float"},
+        {"name": "g", "type": "float"}
+      ],
+      "methods": [
+        {
+          "name": "from_hsv",
+          "return_type": "Color",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": true,
+          "arguments": [
+            {"name": "h", "type": "float"},
+            {"name": "s", "type": "float"},
+            {"name": "v", "type": "float"}
+          ]
+        }
+      ],
+      "operators": [],
+      "constructors": [],
+      "constants": []
+    },
+    {
+      "name": "Vector2",
+      "members": [
+        {"name": "x", "type": "float"},
+        {"name": "y", "type": "float"}
+      ],
+      "methods": [
+        {
+          "name": "snapped",
+          "return_type": "Vector2",
+          "is_const": true,
+          "is_vararg": false,
+          "is_static": false,
+          "arguments": [{"name": "step", "type": "Vector2"}]
+        }
+      ],
+      "operators": [],
+      "constructors": [],
+      "constants": []
+    }
+  ],
+  "classes": [
+    {
+      "name": "Node",
+      "is_refcounted": false,
+      "is_instantiable": true,
+      "inherits": null,
+      "api_type": "core",
+      "methods": [
+        {
+          "name": "add_child",
+          "is_const": false,
+          "is_vararg": false,
+          "is_static": false,
+          "is_virtual": false,
+          "return_value": {"type": "void"},
+          "arguments": [
+            {"name": "node", "type": "Node"},
+            {"name": "force_readable_name", "type": "bool", "default_value": "false"}
+          ]
+        }
+      ],
+      "signals": [{"name": "ready", "arguments": []}],
+      "properties": [
+        {"name": "name", "type": "StringName", "getter": "get_name", "setter": "set_name"},
+        {"name": "position_something_long", "type": "Vector2", "getter": null, "setter": null}
+      ],
+      "enums": [
+        {
+          "name": "ProcessMode",
+          "values": [
+            {"name": "PROCESS_MODE_INHERIT", "value": 0},
+            {"name": "PROCESS_MODE_PAUSABLE", "value": 1}
+          ]
+        }
+      ],
+      "constants": [
+        {"name": "NOTIFICATION_READY", "value": 13}
+      ]
+    },
+    {
+      "name": "Node2D",
+      "is_refcounted": false,
+      "is_instantiable": true,
+      "inherits": "Node",
+      "api_type": "core",
+      "methods": [],
+      "signals": [],
+      "properties": [
+        {"name": "position", "type": "Vector2", "getter": "get_position", "setter": "set_position"},
+        {"name": "rotation", "type": "float", "getter": "get_rotation", "setter": "set_rotation"}
+      ],
+      "enums": [],
+      "constants": []
+    },
+    {
+      "name": "Sprite2D",
+      "is_refcounted": false,
+      "is_instantiable": true,
+      "inherits": "Node2D",
+      "api_type": "core",
+      "methods": [],
+      "signals": [{"name": "texture_changed", "arguments": []}],
+      "properties": [
+        {"name": "texture", "type": "Texture2D", "getter": "get_texture", "setter": "set_texture"}
+      ],
+      "enums": [],
+      "constants": []
+    },
+    {
+      "name": "BigClass",
+      "is_refcounted": false,
+      "is_instantiable": true,
+      "inherits": null,
+      "api_type": "core",
+      "methods": [
+        {"name": "method_a", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_b", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_c", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_d", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_e", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_f", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_g", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_h", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_i", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_j", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_k", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_l", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_m", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_n", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_o", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_p", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_q", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_r", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_s", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_t", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_u", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_v", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_w", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_x", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_y", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []},
+        {"name": "method_z", "is_const": false, "is_vararg": false, "is_static": false, "is_virtual": false, "return_value": {"type": "void"}, "arguments": []}
+      ],
+      "signals": [],
+      "properties": [],
+      "enums": [],
+      "constants": []
+    }
+  ],
+  "singletons": []
+}

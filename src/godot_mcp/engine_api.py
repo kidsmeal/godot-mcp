@@ -14,24 +14,73 @@ from godot_mcp import config, docs
 
 _cache: dict[str, Any] | None = None
 
+# Character budget for get_class responses. When the rendered string exceeds
+# this many characters a drill-down tail is appended so the agent knows to
+# call godot_member for details rather than working from a truncated view.
+_CLASS_CHAR_BUDGET = 4000
+
 
 def _load() -> dict[str, Any]:
     global _cache
+
+    # Fast path: cache was set externally (monkeypatched in tests) or already
+    # holds a terminal sentinel (_missing / _corrupt). Return it immediately
+    # without any mtime check, so test fixtures are never clobbered.
     if _cache is not None:
-        return _cache
+        if "_missing" in _cache or "_corrupt" in _cache:
+            return _cache
+        # A file-loaded cache carries _mtime; a monkeypatched test cache does not.
+        # Only do the staleness check when the cache came from a file load.
+        if "_mtime" not in _cache:
+            return _cache
+
     if not config.EXTENSION_API.exists():
+        # File absent — return the missing sentinel (no mtime to track)
         _cache = {"_missing": True}
         return _cache
-    data = json.loads(config.EXTENSION_API.read_text(encoding="utf-8"))
+
+    try:
+        file_mtime = config.EXTENSION_API.stat().st_mtime
+    except OSError:
+        _cache = {"_missing": True}
+        return _cache
+
+    # C22: reload-on-redump — reuse the cache only when the file mtime matches.
+    if _cache is not None and _cache.get("_mtime") == file_mtime:
+        return _cache
+
+    try:
+        data = json.loads(config.EXTENSION_API.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        _cache = {"_corrupt": True}
+        return _cache
+
     classes = {c["name"]: c for c in data.get("classes", [])}
     builtins = {c["name"]: c for c in data.get("builtin_classes", [])}
     singletons = {s["name"]: s for s in data.get("singletons", [])}
-    ci = {k.lower(): k for k in list(classes) + list(builtins)}
+
+    # C17: index utility_functions, global_enums, global_constants.
+    utility_functions = {f["name"]: f for f in data.get("utility_functions", [])}
+    global_enums = {e["name"]: e for e in data.get("global_enums", [])}
+    global_constants = {k["name"]: k for k in data.get("global_constants", [])}
+
+    # Case-insensitive name map covers classes + builtins + utility_functions +
+    # global_enums + global_constants so get_class/get_member can resolve any of them.
+    ci: dict[str, str] = {}
+    for k in list(classes) + list(builtins):
+        ci[k.lower()] = k
+    for k in list(utility_functions) + list(global_enums) + list(global_constants):
+        ci[k.lower()] = k
+
     _cache = {
+        "_mtime": file_mtime,
         "raw": data,
         "classes": classes,
         "builtins": builtins,
         "singletons": singletons,
+        "utility_functions": utility_functions,
+        "global_enums": global_enums,
+        "global_constants": global_constants,
         "ci": ci,
     }
     return _cache
@@ -41,6 +90,15 @@ def _missing_msg() -> str:
     return (
         f"extension_api.json not found at {config.EXTENSION_API}.\n"
         "Generate it once (signatures are pinned to your installed engine):\n"
+        "    godot --headless --dump-extension-api      # run inside the data/ dir\n"
+        "or run scripts/dump_api.ps1 from this repo."
+    )
+
+
+def _corrupt_msg() -> str:
+    return (
+        "extension_api.json is corrupt or unparseable.\n"
+        "Re-run dump_api to regenerate the API dump:\n"
         "    godot --headless --dump-extension-api      # run inside the data/ dir\n"
         "or run scripts/dump_api.ps1 from this repo."
     )
@@ -112,13 +170,54 @@ def _walk_inherits(
     return result
 
 
+def _format_property(p: dict[str, Any]) -> str:
+    """Format a property line, omitting getter/setter when both are None (C22)."""
+    getter = p.get("getter")
+    setter = p.get("setter")
+    base = f'property {p["name"]}: {_pretty_type(p.get("type"))}'
+    if getter is None and setter is None:
+        return base
+    return f'{base} (get {getter}, set {setter})'
+
+
 def get_class(name: str, include_inherited: bool = False) -> str:
     idx = _load()
     if idx.get("_missing"):
         return _missing_msg()
+    if idx.get("_corrupt"):
+        return _corrupt_msg()
+
     real = idx["ci"].get(name.lower())
     if not real:
         return f'Class "{name}" not found. Try godot_search("{name}").'
+
+    # C17: handle utility function lookup
+    if real in idx.get("utility_functions", {}):
+        uf = idx["utility_functions"][real]
+        args = []
+        for a in uf.get("arguments", []):
+            s = f'{a["name"]}: {_pretty_type(a.get("type"))}'
+            args.append(s)
+        if uf.get("is_vararg"):
+            args.append("...")
+        ret = _pretty_type(uf.get("return_type"))
+        return (
+            f'utility func {real}({", ".join(args)}) -> {ret}\n'
+            f'  category: {uf.get("category", "unknown")}'
+        )
+
+    # C17: handle global enum lookup
+    if real in idx.get("global_enums", {}):
+        ge = idx["global_enums"][real]
+        values = ", ".join(f'{v["name"]}={v["value"]}' for v in ge.get("values", []))
+        bitfield = " [bitfield]" if ge.get("is_bitfield") else ""
+        return f'global enum {real}{bitfield}: {values}'
+
+    # C17: handle global constant lookup
+    if real in idx.get("global_constants", {}):
+        gc = idx["global_constants"][real]
+        return f'global const {real} = {gc.get("value")}'
+
     c = idx["classes"].get(real) or idx["builtins"].get(real)
 
     header = real + (f' : {c["inherits"]}' if c.get("inherits") else "")
@@ -215,7 +314,15 @@ def get_class(name: str, include_inherited: bool = False) -> str:
             lines.append("\nInherited members:")
             lines.extend(inh_lines)
 
-    return "\n".join(lines)
+    # C22: apply character budget — cap the response and append a drill-down tail
+    # so the agent knows to call godot_member for the full picture.
+    result = "\n".join(lines)
+    if len(result) > _CLASS_CHAR_BUDGET:
+        result = (
+            result[:_CLASS_CHAR_BUDGET].rstrip()
+            + f"\n…(response truncated — use godot_member({real!r}, member) for details)"
+        )
+    return result
 
 
 def _scan_record_for_member(c: dict[str, Any], ml: str) -> list[str]:
@@ -229,10 +336,8 @@ def _scan_record_for_member(c: dict[str, Any], ml: str) -> list[str]:
             hits.append(_format_method(m))
     for p in c.get("properties") or c.get("members") or []:
         if p["name"].lower() == ml:
-            hits.append(
-                f'property {p["name"]}: {_pretty_type(p.get("type"))} '
-                f'(get {p.get("getter")}, set {p.get("setter")})'
-            )
+            # C22: omit "(get None, set None)" noise from member listings
+            hits.append(_format_property(p))
     for s in c.get("signals") or []:
         if s["name"].lower() == ml:
             a = ", ".join(f'{x["name"]}: {_pretty_type(x.get("type"))}' for x in s.get("arguments", []))
@@ -250,6 +355,8 @@ def get_member(class_name: str, member: str) -> str:
     idx = _load()
     if idx.get("_missing"):
         return _missing_msg()
+    if idx.get("_corrupt"):
+        return _corrupt_msg()
     real = idx["ci"].get(class_name.lower())
     if not real:
         return f'Class "{class_name}" not found. Try godot_search("{class_name}").'
@@ -293,9 +400,15 @@ def search(query: str, limit: int = 25) -> str:
     idx = _load()
     if idx.get("_missing"):
         return _missing_msg()
+    if idx.get("_corrupt"):
+        return _corrupt_msg()
     q = query.lower()
+
+    # C21: hits bucketed by score tier for correct ranking.
+    # Score 0 = exact, 1 = prefix, 2 = substring.
     cls_hits: list[tuple[int, str]] = []
-    member_hits: list[str] = []
+    # C21: member/constant/enum hits also carry a score for ranking.
+    member_hits: list[tuple[int, str]] = []
 
     singleton_names = set(idx["singletons"])
 
@@ -304,19 +417,34 @@ def search(query: str, limit: int = 25) -> str:
         nl = name.lower()
         if q in nl:
             score = 0 if nl == q else (1 if nl.startswith(q) else 2)
-            # Most singletons share their class name — tag the class row instead of
-            # emitting a separate one (avoids a duplicate entry that eats into `limit`).
             label = f"{name} [singleton]" if name in singleton_names else name
             cls_hits.append((score, label))
         for m in c.get("methods") or []:
-            if q in m["name"].lower():
-                member_hits.append(f'{name}.{m["name"]}()')
+            ml = m["name"].lower()
+            if q in ml:
+                score = 0 if ml == q else (1 if ml.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{m["name"]}()'))
         for s in c.get("signals") or []:
-            if q in s["name"].lower():
-                member_hits.append(f'{name}.{s["name"]} [signal]')
+            sl = s["name"].lower()
+            if q in sl:
+                score = 0 if sl == q else (1 if sl.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{s["name"]} [signal]'))
         for p in c.get("properties") or []:
-            if q in p["name"].lower():
-                member_hits.append(f'{name}.{p["name"]} [property]')
+            pl = p["name"].lower()
+            if q in pl:
+                score = 0 if pl == q else (1 if pl.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{p["name"]} [property]'))
+        # C21: surface class-level enums and constants in search results
+        for e in c.get("enums") or []:
+            el = e["name"].lower()
+            if q in el:
+                score = 0 if el == q else (1 if el.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{e["name"]} [enum]'))
+        for k in c.get("constants") or []:
+            kl = k["name"].lower()
+            if q in kl:
+                score = 0 if kl == q else (1 if kl.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{k["name"]} [constant]'))
 
     # Built-in types (Color, Vector2, …)
     for name, c in idx["builtins"].items():
@@ -325,14 +453,20 @@ def search(query: str, limit: int = 25) -> str:
             score = 0 if nl == q else (1 if nl.startswith(q) else 2)
             cls_hits.append((score, name))
         for m in c.get("methods") or []:
-            if q in m["name"].lower():
-                member_hits.append(f'{name}.{m["name"]}()')
+            ml = m["name"].lower()
+            if q in ml:
+                score = 0 if ml == q else (1 if ml.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{m["name"]}()'))
         for mem in c.get("members") or []:
-            if q in mem["name"].lower():
-                member_hits.append(f'{name}.{mem["name"]} [property]')
+            meml = mem["name"].lower()
+            if q in meml:
+                score = 0 if meml == q else (1 if meml.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{mem["name"]} [property]'))
         for con in c.get("constants") or []:
-            if q in con["name"].lower():
-                member_hits.append(f'{name}.{con["name"]} [constant]')
+            conl = con["name"].lower()
+            if q in conl:
+                score = 0 if conl == q else (1 if conl.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{con["name"]} [constant]'))
 
     # Singletons whose name is NOT also a class (those are tagged on the class row
     # above). Covers the rare case of a singleton exposed under a different name.
@@ -345,8 +479,35 @@ def search(query: str, limit: int = 25) -> str:
             label = sname if s.get("type") == sname else f'{sname} ({s.get("type")})'
             cls_hits.append((score, f'{label} [singleton]'))
 
+    # C17: utility functions
+    for name, uf in idx.get("utility_functions", {}).items():
+        nl = name.lower()
+        if q in nl:
+            score = 0 if nl == q else (1 if nl.startswith(q) else 2)
+            cls_hits.append((score, f'{name} [utility_function]'))
+
+    # C17: global enums — surface the enum name AND its value names
+    for name, ge in idx.get("global_enums", {}).items():
+        nl = name.lower()
+        if q in nl:
+            score = 0 if nl == q else (1 if nl.startswith(q) else 2)
+            cls_hits.append((score, f'{name} [global_enum]'))
+        for v in ge.get("values", []):
+            vl = v["name"].lower()
+            if q in vl:
+                score = 0 if vl == q else (1 if vl.startswith(q) else 2)
+                member_hits.append((score, f'{name}.{v["name"]} [global_enum_value]'))
+
+    # C17: global constants
+    for name in idx.get("global_constants", {}):
+        nl = name.lower()
+        if q in nl:
+            score = 0 if nl == q else (1 if nl.startswith(q) else 2)
+            member_hits.append((score, f'{name} [global_constant]'))
+
     cls_hits.sort()
-    results = [n for _, n in cls_hits] + member_hits
+    member_hits.sort()
+    results = [n for _, n in cls_hits] + [n for _, n in member_hits]
     if not results:
         return f'No API matches for "{query}".'
     shown = results[:limit]

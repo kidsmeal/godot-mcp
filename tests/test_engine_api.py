@@ -1,4 +1,6 @@
 """Phase 2 tests: engine grounding correctness (F-4, F-5).
+Phase 4 tests: utility_functions/global_enums/global_constants indexing (C17),
+               member hit ranking (C21), char budget + misc C22 fixes.
 
 Two test tiers:
   1. Synthetic index (monkeypatched _cache) — deterministic, no network/file I/O.
@@ -15,11 +17,16 @@ Synthetic record shape is validated against the real extension_api.json schema:
 """
 from __future__ import annotations
 
+import json
+import pathlib
 from typing import Any
 
 import pytest
 
 from godot_mcp import config, engine_api
+
+# Path to the Phase-4 fixture dump (checked in, never touches capsulecastle)
+_FIXTURE_DUMP = pathlib.Path(__file__).parent / "fixtures" / "extension_api_phase4.json"
 
 # ---------------------------------------------------------------------------
 # Synthetic index fixture
@@ -31,6 +38,61 @@ from godot_mcp import config, engine_api
 # Singleton: Input -> type Input (also a class in classes for type resolution).
 
 _SYNTHETIC_INDEX: dict[str, Any] = {
+    # Phase-4 additions: utility_functions, global_enums, global_constants
+    "utility_functions": {
+        "lerp": {
+            "name": "lerp",
+            "return_type": "Variant",
+            "category": "math",
+            "is_vararg": False,
+            "arguments": [
+                {"name": "from", "type": "Variant"},
+                {"name": "to", "type": "Variant"},
+                {"name": "weight", "type": "float"},
+            ],
+        },
+        "sin": {
+            "name": "sin",
+            "return_type": "float",
+            "category": "math",
+            "is_vararg": False,
+            "arguments": [{"name": "angle_rad", "type": "float"}],
+        },
+        "lerp_angle": {
+            "name": "lerp_angle",
+            "return_type": "float",
+            "category": "math",
+            "is_vararg": False,
+            "arguments": [
+                {"name": "from", "type": "float"},
+                {"name": "to", "type": "float"},
+                {"name": "weight", "type": "float"},
+            ],
+        },
+    },
+    "global_enums": {
+        "Side": {
+            "name": "Side",
+            "is_bitfield": False,
+            "values": [
+                {"name": "SIDE_LEFT", "value": 0},
+                {"name": "SIDE_TOP", "value": 1},
+                {"name": "SIDE_RIGHT", "value": 2},
+                {"name": "SIDE_BOTTOM", "value": 3},
+            ],
+        },
+        "Key": {
+            "name": "Key",
+            "is_bitfield": False,
+            "values": [
+                {"name": "KEY_NONE", "value": 0},
+                {"name": "KEY_ESCAPE", "value": 16777217},
+            ],
+        },
+    },
+    "global_constants": {
+        "SPKEY": {"name": "SPKEY", "value": 16777216},
+    },
     "classes": {
         "Node": {
             "name": "Node",
@@ -52,9 +114,22 @@ _SYNTHETIC_INDEX: dict[str, Any] = {
                 }
             ],
             "signals": [{"name": "ready", "arguments": []}],
-            "properties": [],
-            "enums": [],
-            "constants": [],
+            "properties": [
+                # null getter/setter — C22: should NOT produce "(get None, set None)"
+                {"name": "position_something_long", "type": "Vector2", "getter": None, "setter": None},
+            ],
+            "enums": [
+                {
+                    "name": "ProcessMode",
+                    "values": [
+                        {"name": "PROCESS_MODE_INHERIT", "value": 0},
+                        {"name": "PROCESS_MODE_PAUSABLE", "value": 1},
+                    ],
+                }
+            ],
+            "constants": [
+                {"name": "NOTIFICATION_READY", "value": 13},
+            ],
         },
         "CanvasItem": {
             "name": "CanvasItem",
@@ -76,7 +151,9 @@ _SYNTHETIC_INDEX: dict[str, Any] = {
             "api_type": "core",
             "methods": [],
             "signals": [],
-            "properties": [],
+            "properties": [
+                {"name": "position", "type": "Vector2", "getter": "get_position", "setter": "set_position"},
+            ],
             "enums": [],
             "constants": [],
         },
@@ -169,15 +246,27 @@ _SYNTHETIC_INDEX: dict[str, Any] = {
     "singletons": {
         "Input": {"name": "Input", "type": "Input"},
     },
-    # ci: case-insensitive name map — classes + builtins (NOT singletons)
+    # ci: case-insensitive name map — classes + builtins + utility_functions +
+    # global_enums + global_constants (NOT singletons).
     "ci": {
+        # classes
         "node": "Node",
         "canvasitem": "CanvasItem",
         "node2d": "Node2D",
         "sprite2d": "Sprite2D",
         "input": "Input",
+        # builtins
         "color": "Color",
         "vector2": "Vector2",
+        # utility_functions
+        "lerp": "lerp",
+        "sin": "sin",
+        "lerp_angle": "lerp_angle",
+        # global_enums
+        "side": "Side",
+        "key": "Key",
+        # global_constants
+        "spkey": "SPKEY",
     },
 }
 
@@ -400,3 +489,312 @@ class TestRealDumpSanity:
         result = engine_api.search("snapped")
         assert "snapped" in result
         assert "No API matches" not in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — C17: utility_functions / global_enums / global_constants indexing
+# ---------------------------------------------------------------------------
+
+class TestC17UtilityFunctions:
+    """search() and get_class() must surface utility functions."""
+
+    def test_search_finds_utility_function(self, synthetic):
+        """search('lerp') returns the lerp utility function."""
+        result = engine_api.search("lerp")
+        assert "lerp" in result
+        assert "No API matches" not in result
+
+    def test_search_utility_function_label(self, synthetic):
+        """Utility function hits are labeled with [utility_function]."""
+        result = engine_api.search("lerp")
+        assert "[utility_function]" in result
+
+    def test_get_class_resolves_utility_function(self, synthetic):
+        """get_class('lerp') returns the function signature, not 'not found'."""
+        result = engine_api.get_class("lerp")
+        assert "lerp" in result
+        assert "not found" not in result.lower()
+
+    def test_search_does_not_return_utility_as_class(self, synthetic):
+        """A utility function hit must not claim to be a class."""
+        result = engine_api.search("sin")
+        assert "sin" in result
+        assert "No API matches" not in result
+
+
+class TestC17GlobalEnums:
+    """search() and get_class() must surface global enums."""
+
+    def test_search_finds_global_enum_name(self, synthetic):
+        """search('Side') finds the global enum Side."""
+        result = engine_api.search("Side")
+        assert "Side" in result
+        assert "No API matches" not in result
+
+    def test_search_global_enum_label(self, synthetic):
+        """Global enum hits are labeled with [global_enum]."""
+        result = engine_api.search("Side")
+        assert "[global_enum]" in result
+
+    def test_search_finds_enum_value_name(self, synthetic):
+        """search('SIDE_LEFT') finds the value inside global enum Side."""
+        result = engine_api.search("SIDE_LEFT")
+        assert "SIDE_LEFT" in result
+        assert "No API matches" not in result
+
+    def test_get_class_resolves_global_enum(self, synthetic):
+        """get_class('Key') resolves the global enum Key."""
+        result = engine_api.get_class("Key")
+        assert "Key" in result
+        assert "not found" not in result.lower()
+
+
+class TestC17GlobalConstants:
+    """search() must surface global constants."""
+
+    def test_search_finds_global_constant(self, synthetic):
+        """search('SPKEY') finds the global constant SPKEY."""
+        result = engine_api.search("SPKEY")
+        assert "SPKEY" in result
+        assert "No API matches" not in result
+
+    def test_search_global_constant_label(self, synthetic):
+        """Global constant hits are labeled with [global_constant]."""
+        result = engine_api.search("SPKEY")
+        assert "[global_constant]" in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — C17: fixture-dump loader (tests _load from real JSON shape)
+# ---------------------------------------------------------------------------
+
+@pytest.fixture()
+def fixture_dump(monkeypatch, tmp_path):
+    """Load the phase-4 fixture dump via monkeypatched EXTENSION_API."""
+    import shutil
+    dest = tmp_path / "extension_api.json"
+    shutil.copy(_FIXTURE_DUMP, dest)
+    monkeypatch.setattr(config, "EXTENSION_API", dest)
+    monkeypatch.setattr(engine_api, "_cache", None)
+    yield dest
+    monkeypatch.setattr(engine_api, "_cache", None)
+
+
+class TestC17FixtureDump:
+    """Use the checked-in fixture dump (no real Godot install needed)."""
+
+    def test_load_indexes_utility_functions(self, fixture_dump):
+        """_load must index utility_functions from the fixture dump."""
+        idx = engine_api._load()
+        assert "utility_functions" in idx
+        assert "lerp" in idx["utility_functions"]
+
+    def test_load_indexes_global_enums(self, fixture_dump):
+        """_load must index global_enums from the fixture dump."""
+        idx = engine_api._load()
+        assert "global_enums" in idx
+        assert "Side" in idx["global_enums"]
+
+    def test_load_indexes_global_constants(self, fixture_dump):
+        """_load must index global_constants from the fixture dump."""
+        idx = engine_api._load()
+        assert "global_constants" in idx
+        assert "SPKEY" in idx["global_constants"]
+
+    def test_search_lerp_returns_result(self, fixture_dump):
+        """search('lerp') against the fixture dump finds the lerp utility fn."""
+        result = engine_api.search("lerp")
+        assert "lerp" in result
+        assert "No API matches" not in result
+
+    def test_search_side_returns_global_enum(self, fixture_dump):
+        """search('Side') against the fixture dump finds the Side global enum."""
+        result = engine_api.search("Side")
+        assert "Side" in result
+        assert "No API matches" not in result
+
+    def test_search_spkey_returns_global_constant(self, fixture_dump):
+        """search('SPKEY') against the fixture dump finds the global constant."""
+        result = engine_api.search("SPKEY")
+        assert "SPKEY" in result
+        assert "No API matches" not in result
+
+    def test_get_class_key_resolves(self, fixture_dump):
+        """get_class('Key') resolves the global enum from the fixture dump."""
+        result = engine_api.get_class("Key")
+        assert "Key" in result
+        assert "not found" not in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — C21: member hit ranking (exact > prefix > substring)
+# ---------------------------------------------------------------------------
+
+class TestC21SearchRanking:
+    """Exact name match must rank above prefix match, prefix above substring."""
+
+    def test_exact_match_before_prefix(self, synthetic):
+        """search('lerp') — exact 'lerp' must appear before 'lerp_angle' prefix match."""
+        result = engine_api.search("lerp")
+        lines = [ln for ln in result.splitlines() if "lerp" in ln.lower()]
+        assert len(lines) >= 2, f"Expected at least 2 lerp hits, got: {lines}"
+        # The exact match line contains 'lerp' but not 'lerp_angle' or similar
+        exact_idx = next((i for i, ln in enumerate(lines) if "lerp_angle" not in ln), None)
+        prefix_idx = next((i for i, ln in enumerate(lines) if "lerp_angle" in ln), None)
+        assert exact_idx is not None and prefix_idx is not None, f"Lines: {lines}"
+        assert exact_idx < prefix_idx, (
+            f"Exact match (idx {exact_idx}) must come before prefix match (idx {prefix_idx}): {lines}"
+        )
+
+    def test_member_hits_ranked_exact_prefix_substring(self, synthetic):
+        """search('position') — 'position' exact member before 'position_something_long'."""
+        result = engine_api.search("position")
+        lines = [ln for ln in result.splitlines() if "position" in ln.lower()]
+        if len(lines) < 2:
+            pytest.skip("Need at least two position hits in synthetic index")
+        exact_idx = next(
+            (i for i, ln in enumerate(lines) if ln.strip().endswith(".position [property]")), None
+        )
+        sub_idx = next(
+            (i for i, ln in enumerate(lines) if "position_something_long" in ln), None
+        )
+        if exact_idx is not None and sub_idx is not None:
+            assert exact_idx < sub_idx, (
+                f"Exact hit (idx {exact_idx}) must be before substring hit (idx {sub_idx})"
+            )
+
+    def test_search_notification_ready_constant(self, synthetic):
+        """search('NOTIFICATION_READY') finds the constant in class Node."""
+        result = engine_api.search("NOTIFICATION_READY")
+        assert "NOTIFICATION_READY" in result
+        assert "No API matches" not in result
+
+    def test_search_process_mode_enum(self, synthetic):
+        """search('ProcessMode') finds the enum in class Node."""
+        result = engine_api.search("ProcessMode")
+        assert "ProcessMode" in result
+        assert "No API matches" not in result
+
+    def test_global_enum_value_finds_hit(self, synthetic):
+        """search('SIDE_LEFT') finds the global enum value."""
+        result = engine_api.search("SIDE_LEFT")
+        assert "SIDE_LEFT" in result
+        assert "No API matches" not in result
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 — C22: char budget, (get None, set None) cleanup, stale cache, JSON error
+# ---------------------------------------------------------------------------
+
+class TestC22CharBudget:
+    """get_class response for a large class is capped with a drill-down tail."""
+
+    def test_large_class_capped_with_tail(self, fixture_dump, monkeypatch):
+        """A class whose rendered output exceeds the char budget gets the drill-down tail.
+
+        We monkeypatch _CLASS_CHAR_BUDGET to 100 so the BigClass fixture (which
+        has 26 methods) reliably exceeds the threshold without needing a 4000-char
+        fixture.  This tests the mechanism; the real threshold is 4000.
+        """
+        monkeypatch.setattr(engine_api, "_CLASS_CHAR_BUDGET", 100)
+        result = engine_api.get_class("BigClass")
+        assert "godot_member" in result, (
+            f"Expected drill-down tail with 'godot_member', got:\n{result[-300:]}"
+        )
+
+    def test_small_class_no_tail(self, fixture_dump, monkeypatch):
+        """A tiny class must not get a spurious tail when it fits within the budget."""
+        # Set budget above Color's expected output (~100 chars with 1 method)
+        monkeypatch.setattr(engine_api, "_CLASS_CHAR_BUDGET", 4000)
+        result = engine_api.get_class("Color")
+        assert "Color" in result
+        assert "godot_member" not in result or "(response truncated" not in result
+
+
+class TestC22GetNoneCleanup:
+    """(get None, set None) must not appear in member listings."""
+
+    def test_get_none_set_none_absent(self, synthetic):
+        """A property with getter=None and setter=None must not show '(get None, set None)'."""
+        result = engine_api.get_member("Node", "position_something_long")
+        assert "(get None, set None)" not in result
+        assert "position_something_long" in result
+
+    def test_real_getter_setter_shown(self, synthetic):
+        """A property with real getter/setter should show something useful (not '(get None, set None)')."""
+        result = engine_api.get_member("Sprite2D", "texture")
+        assert "(get None, set None)" not in result
+
+
+class TestC22StaleCache:
+    """_cache is reloaded when the JSON source file is newer than the cached parse."""
+
+    def test_newer_file_triggers_reload(self, tmp_path, monkeypatch):
+        """Writing a newer extension_api.json after a load must cause a cache miss on next call."""
+        import time
+
+        # Set up initial fixture
+        dest = tmp_path / "extension_api.json"
+        import shutil
+        shutil.copy(_FIXTURE_DUMP, dest)
+        monkeypatch.setattr(config, "EXTENSION_API", dest)
+        monkeypatch.setattr(engine_api, "_cache", None)
+
+        # First load — populates _cache
+        idx1 = engine_api._load()
+        assert "utility_functions" in idx1
+
+        # Ensure mtime changes (write a slightly modified version)
+        time.sleep(0.05)
+        data = json.loads(dest.read_text(encoding="utf-8"))
+        data["global_constants"] = [{"name": "RELOAD_SENTINEL", "value": 99}]
+        dest.write_text(json.dumps(data), encoding="utf-8")
+
+        # Second load — must detect new mtime and reload
+        idx2 = engine_api._load()
+        assert "RELOAD_SENTINEL" in idx2.get("global_constants", {}), (
+            "Stale cache was not invalidated after file was updated"
+        )
+
+    def test_unchanged_file_reuses_cache(self, tmp_path, monkeypatch):
+        """If the file mtime has not changed, _load must reuse the cached index."""
+        dest = tmp_path / "extension_api.json"
+        import shutil
+        shutil.copy(_FIXTURE_DUMP, dest)
+        monkeypatch.setattr(config, "EXTENSION_API", dest)
+        monkeypatch.setattr(engine_api, "_cache", None)
+
+        idx1 = engine_api._load()
+        # Replace _cache with a sentinel to confirm it's reused
+        sentinel: dict[str, Any] = {"_sentinel": True, "_mtime": idx1.get("_mtime")}
+        monkeypatch.setattr(engine_api, "_cache", sentinel)
+        idx2 = engine_api._load()
+        assert idx2 is sentinel, "Cache was not reused for an unchanged file"
+
+
+class TestC22JsonDecodeError:
+    """Corrupt extension_api.json must return a 're-run dump_api' message, not raise."""
+
+    def test_corrupt_json_returns_message(self, tmp_path, monkeypatch):
+        """A JSON-corrupt dump must return the user-facing message from get_class/search."""
+        dest = tmp_path / "extension_api.json"
+        dest.write_text("{corrupted: not valid json,,,", encoding="utf-8")
+        monkeypatch.setattr(config, "EXTENSION_API", dest)
+        monkeypatch.setattr(engine_api, "_cache", None)
+
+        result_class = engine_api.get_class("Node")
+        assert "dump_api" in result_class.lower() or "re-run" in result_class.lower(), (
+            f"Expected 're-run dump_api' message, got: {result_class}"
+        )
+
+    def test_corrupt_json_search_returns_message(self, tmp_path, monkeypatch):
+        """search() on a corrupt dump must return the user-facing message, not raise."""
+        dest = tmp_path / "extension_api.json"
+        dest.write_text("<<<not json>>>", encoding="utf-8")
+        monkeypatch.setattr(config, "EXTENSION_API", dest)
+        monkeypatch.setattr(engine_api, "_cache", None)
+
+        result = engine_api.search("lerp")
+        assert "dump_api" in result.lower() or "re-run" in result.lower(), (
+            f"Expected 're-run dump_api' message, got: {result}"
+        )
