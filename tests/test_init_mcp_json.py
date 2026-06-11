@@ -9,11 +9,21 @@ All tests are fully offline — no Godot binary needed.
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 # Import the function under test directly; it is not exported from __init__,
 # so we reach into the module.
 from godot_mcp.init import _write_mcp_json
+
+# Absolute path to the package source. The import-safety tests spawn a bare
+# subprocess that does NOT inherit pytest's pythonpath=["src"], so it can only
+# find godot_mcp via an editable install — which may be absent in CI / fresh
+# checkouts. Pinning PYTHONPATH here makes those tests resolve the package
+# deterministically regardless of install state.
+_SRC = str(Path(__file__).resolve().parents[1] / "src")
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -21,6 +31,17 @@ from godot_mcp.init import _write_mcp_json
 
 def _mcp_path(tmp_path: Path) -> Path:
     return tmp_path / ".mcp.json"
+
+
+def _import_env(tmp_path: Path) -> dict[str, str]:
+    """Env for the import-safety subprocess: src on PYTHONPATH so godot_mcp
+    resolves without an editable install; GODOT_PROJECT pins the profile load
+    to the tmp fixture."""
+    env = dict(os.environ)
+    existing = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = _SRC + (os.pathsep + existing if existing else "")
+    env["GODOT_PROJECT"] = str(tmp_path)
+    return env
 
 
 def _write_existing(tmp_path: Path, content: str) -> Path:
@@ -174,8 +195,6 @@ class TestImportTimeSafety:
 
     def test_import_with_catalog_table_does_not_raise(self, tmp_path):
         """Importing godot_mcp.config with a [catalog]-table profile must not raise."""
-        import subprocess
-        import sys
         (tmp_path / "project.godot").write_text('[application]\nconfig/name="T"\n', encoding="utf-8")
         (tmp_path / "godot-mcp.toml").write_text(
             "[catalog]\nname = \"items\"\nfile = \"items.gd\"\npattern = \"r\"\n",
@@ -183,7 +202,7 @@ class TestImportTimeSafety:
         )
         result = subprocess.run(
             [sys.executable, "-c", "import godot_mcp.config"],
-            env={**__import__("os").environ, "GODOT_PROJECT": str(tmp_path)},
+            env=_import_env(tmp_path),
             capture_output=True,
             text=True,
         )
@@ -191,8 +210,6 @@ class TestImportTimeSafety:
 
     def test_import_with_docs_string_does_not_raise(self, tmp_path):
         """Importing godot_mcp.config with docs=\"string\" profile must not raise."""
-        import subprocess
-        import sys
         (tmp_path / "project.godot").write_text('[application]\nconfig/name="T"\n', encoding="utf-8")
         (tmp_path / "godot-mcp.toml").write_text(
             "[project]\nname = \"T\"\ndocs = \"not-a-table\"\n",
@@ -200,7 +217,7 @@ class TestImportTimeSafety:
         )
         result = subprocess.run(
             [sys.executable, "-c", "import godot_mcp.config"],
-            env={**__import__("os").environ, "GODOT_PROJECT": str(tmp_path)},
+            env=_import_env(tmp_path),
             capture_output=True,
             text=True,
         )
