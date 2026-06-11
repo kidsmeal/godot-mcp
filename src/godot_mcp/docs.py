@@ -3,16 +3,19 @@
 extension_api.json carries signatures but no prose. The official source XML
 (github.com/godotengine/godot/<tag>/doc/classes/<Class>.xml) carries brief/full
 descriptions per class, method, property, and signal. We fetch lazily per class at
-the project's exact version tag and cache under data/godot_docs/, so repeated queries
-are offline. Network failure / GODOT_MCP_DOCS=0 → signatures-only (graceful).
+the project's exact version tag and cache under data/godot_docs/<tag>/, so repeated
+queries are offline. Network failure / GODOT_MCP_DOCS=0 → signatures-only (graceful).
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import tempfile
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 from godot_mcp import config
 
@@ -20,6 +23,10 @@ _RAW = "https://raw.githubusercontent.com/godotengine/godot/{tag}/doc/classes/{c
 _CACHE = config.DATA_DIR / "godot_docs"
 _tag: str | None = None
 _mem: dict[str, dict | None] = {}
+# Process-wide latch: set on the first connection failure (not a 404).
+# A 404 just means that class page doesn't exist; a connection error means the
+# network is unavailable for the whole session.
+_network_down: bool = False
 
 
 def _enabled() -> bool:
@@ -31,7 +38,16 @@ def _version_tag() -> str:
     if _tag is None:
         try:
             h = json.loads(config.EXTENSION_API.read_text(encoding="utf-8")).get("header", {})
-            _tag = f"{h['version_major']}.{h['version_minor']}.{h.get('version_patch', 0)}-{h.get('version_status', 'stable')}"
+            major = h["version_major"]
+            minor = h["version_minor"]
+            patch = h.get("version_patch", 0)
+            status = h.get("version_status", "stable")
+            # Godot's official release tag omits the .0 patch component (e.g. 4.2-stable,
+            # not 4.2.0-stable). A non-zero patch is always included (e.g. 4.2.1-stable).
+            if patch == 0:
+                _tag = f"{major}.{minor}-{status}"
+            else:
+                _tag = f"{major}.{minor}.{patch}-{status}"
         except Exception:
             _tag = ""
     return _tag
@@ -79,21 +95,70 @@ def _norm(text: str | None) -> str:
 
 
 def _fetch_xml(name: str) -> str | None:
-    cache = _CACHE / f"{name}.xml"
-    if cache.exists():
-        return cache.read_text(encoding="utf-8", errors="replace")
+    global _network_down
+
     tag = _version_tag()
     if not tag:
         return None
+
+    # Version-keyed cache directory: godot_docs/<tag>/<ClassName>.xml
+    tag_dir = _CACHE / tag
+    cache = tag_dir / f"{name}.xml"
+
+    if cache.exists():
+        return cache.read_text(encoding="utf-8", errors="replace")
+
+    # Network-down latch: if a prior call failed with a connection error, skip fetch.
+    if _network_down:
+        return None
+
+    url = _RAW.format(tag=tag, cls=name)
+    req = urllib.request.Request(url, headers={"User-Agent": "godot-grounding-mcp"})
     try:
-        req = urllib.request.Request(_RAW.format(tag=tag, cls=name), headers={"User-Agent": "godot-grounding-mcp"})
         with urllib.request.urlopen(req, timeout=8) as r:
             data = r.read().decode("utf-8", "replace")
-        _CACHE.mkdir(parents=True, exist_ok=True)
-        cache.write_text(data, encoding="utf-8")
-        return data
-    except Exception:
+    except urllib.error.HTTPError as exc:
+        # An HTTP 404 means the class page doesn't exist for this version;
+        # it is NOT a connectivity failure, so the latch stays clear.
+        if exc.code == 404:
+            return None
+        # Any other HTTP error is treated as a connection problem.
+        _network_down = True
         return None
+    except Exception:
+        # socket.error, urllib.error.URLError (non-HTTP), timeout, etc.
+        _network_down = True
+        return None
+
+    # Validate XML before writing — don't cache broken data.
+    try:
+        ET.fromstring(data)
+    except ET.ParseError:
+        return None
+
+    # Atomic write: write to a temp file in the same directory, then rename.
+    # A crash mid-write leaves no partial .xml in the cache.
+    tag_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = None
+    try:
+        fd, tmp_str = tempfile.mkstemp(
+            suffix=".xml.tmp", prefix=f"{name}_", dir=tag_dir
+        )
+        tmp_path = Path(tmp_str)  # mkstemp returns the full absolute path
+        # Close the raw fd first; write_text opens its own handle.
+        os.close(fd)
+        tmp_path.write_text(data, encoding="utf-8")
+        os.replace(str(tmp_path), str(cache))
+        tmp_path = None  # ownership transferred to cache path
+    except Exception:
+        if tmp_path is not None and tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+        return None
+
+    return data
 
 
 def class_docs(name: str) -> dict | None:

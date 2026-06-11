@@ -23,7 +23,10 @@ Next physical action:
 - [x] Phase 6 shipped — bridge hardening + auth + protocol fixes. 162 tests green, ruff/mypy clean.
 - [x] Phase 6.5 plan written (6 phases, C15/C16 first). Phase 6.5-P1 (crash class) shipped — 185 tests green.
 - [x] Phase 6.5-P2 shipped — validation correctness + env-vs-parse verdict (C5, C8–C14). 203 tests green.
-- [ ] **Phase 6.5-P3** — edit-path integrity (C1–C4, C6). First action: gantry:build Phase 3.
+- [x] Phase 6.5-P3 shipped — edit-path integrity (C1–C4, C6, C7-partial). 221 tests green. `f196fed`
+- [x] Phase 6.5-P4 shipped — engine API indexing + search ranking (C17, C21, C22). 249 tests green. `aecb79e`
+- [x] Phase 6.5-P5 shipped — docs fetch + cache correctness (C18, C19, C20). 269 tests green. (+ fixed flaky import-safety tests: `0778033`)
+- [ ] **Phase 6.5-P6** — doctor drift + remaining grounding parsers (C17-doctor, C23–C31 where cheap). First action: gantry:build Phase 6.
 
 Rule: when you finish a step, check it off and write the next single tiny step. Do not start another thread until this one ships or you consciously move it to the Queue.
 
