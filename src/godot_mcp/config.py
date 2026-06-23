@@ -51,14 +51,18 @@ def resolve_project_path(path: str) -> Path:
 
 
 def read_text(path: Path) -> str | None:
-    """Read a UTF-8 text file, tolerating odd bytes. Returns None if unreadable."""
+    """Read a UTF-8 text file, tolerating odd bytes and BOM. Returns None if unreadable.
+
+    Uses utf-8-sig to silently strip a leading BOM (C25) — BOM on line 1 shifts
+    ^-anchored regex matches and breaks the [section] parser for project.godot.
+    """
     try:
-        return path.read_text(encoding="utf-8")
+        return path.read_text(encoding="utf-8-sig")
     except FileNotFoundError:
         return None
     except UnicodeDecodeError:
         try:
-            return path.read_text(encoding="utf-8", errors="replace")
+            return path.read_text(encoding="utf-8-sig", errors="replace")
         except Exception:
             return None
     except Exception:
@@ -70,6 +74,36 @@ def project_version() -> str:
     pg = read_text(PROJECT_ROOT / "project.godot") or ""
     m = re.search(r"config/features=PackedStringArray\(([^)]*)\)", pg)
     return m.group(1).strip() if m else "unknown"
+
+
+# ---------------------------------------------------------------------------
+# Shared .gd file fingerprint helper (C23)
+# ---------------------------------------------------------------------------
+
+_GD_SKIP_DIRS: frozenset[str] = frozenset({".godot", ".git", ".import"})
+
+
+def gd_signature() -> frozenset:
+    """Fingerprint of all .gd files under PROJECT_ROOT as a frozenset of
+    (relative-posix-path, mtime) pairs.
+
+    Detects renames that preserve file count and mtime-sum — which the old
+    (count, mtime_sum) tuple could not. Stat-only: no file reads.
+    """
+    pairs: list[tuple[str, float]] = []
+    root = PROJECT_ROOT
+    for dp, dn, fn in os.walk(root):
+        dn[:] = [d for d in dn if d not in _GD_SKIP_DIRS]
+        for f in fn:
+            if f.endswith(".gd"):
+                abs_p = Path(dp) / f
+                try:
+                    rel = abs_p.relative_to(root).as_posix()
+                    mtime = abs_p.stat().st_mtime
+                    pairs.append((rel, round(mtime, 3)))
+                except (OSError, ValueError):
+                    pass
+    return frozenset(pairs)
 
 
 def resolve_godot() -> list[str]:

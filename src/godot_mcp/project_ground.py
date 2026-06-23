@@ -328,23 +328,16 @@ def setting(name: str, resolve: bool = False) -> str:
 # classes  (class_name → res:// scan, _gd_signature cached)
 # ---------------------------------------------------------------------------
 
-_SKIP_DIRS = {".godot", ".git", ".import"}
 _CLASS_NAME_RE = re.compile(r"^\s*class_name\s+([A-Za-z_][A-Za-z0-9_]*)", re.M)
 
 
-def _gd_signature() -> tuple[int, float]:
-    """Cheap fingerprint of the project's .gd files (count + mtime sum)."""
-    count, mtime_sum = 0, 0.0
-    for dp, dn, fn in os.walk(config.PROJECT_ROOT):
-        dn[:] = [d for d in dn if d not in _SKIP_DIRS]
-        for f in fn:
-            if f.endswith(".gd"):
-                try:
-                    mtime_sum += (Path(dp) / f).stat().st_mtime
-                    count += 1
-                except OSError:
-                    pass
-    return (count, round(mtime_sum, 3))
+def _gd_signature() -> frozenset:
+    """Fingerprint of the project's .gd files as a frozenset of (relpath, mtime) pairs.
+
+    Delegates to config.gd_signature() — the single shared implementation (C23).
+    Detects renames that preserve file count and mtime-sum.
+    """
+    return config.gd_signature()
 
 
 def classes() -> str:
@@ -361,7 +354,7 @@ def classes() -> str:
     root = config.PROJECT_ROOT.resolve()
     found: list[tuple[str, str]] = []  # (ClassName, res://path)
     for dp, dn, fn in os.walk(config.PROJECT_ROOT):
-        dn[:] = [d for d in dn if d not in _SKIP_DIRS]
+        dn[:] = [d for d in dn if d not in config._GD_SKIP_DIRS]
         for f in fn:
             if not f.endswith(".gd"):
                 continue

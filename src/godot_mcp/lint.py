@@ -214,6 +214,25 @@ def _line_findings(source, path):
     return out
 
 
+def _strip_comment(line: str) -> str:
+    """Return line with any trailing comment stripped (C27).
+
+    Scans character by character, tracking quoted-string state, to find the first
+    unquoted `#`. A leading-comment line is handled by the callers' startswith check;
+    this handles the trailing case (e.g. 'register("key")  # some comment').
+    """
+    q: str | None = None
+    for i, c in enumerate(line):
+        if q:
+            if c == q and (i == 0 or line[i - 1] != "\\"):
+                q = None
+        elif c in "\"'":
+            q = c
+        elif c == "#":
+            return line[:i]
+    return line
+
+
 def _lev(a: str, b: str, cap: int = 2) -> int:
     """Bounded Levenshtein distance; returns cap+1 if it exceeds cap."""
     if abs(len(a) - len(b)) > cap:
@@ -254,7 +273,7 @@ def _catalog_findings(source, catalog_refs):
         for i, line in enumerate(source.splitlines(), start=1):
             if line.lstrip().startswith("#"):
                 continue
-            for m in use_rx.finditer(line):
+            for m in use_rx.finditer(_strip_comment(line)):  # C27: skip trailing comments
                 key = m.group(1)
                 if not key or key in known:
                     continue
@@ -328,9 +347,10 @@ def _input_action_findings(source: str, input_actions: set[str]) -> list[dict]:
     for i, line in enumerate(source.splitlines(), start=1):
         if line.lstrip().startswith("#"):
             continue
+        code = _strip_comment(line)  # C27: skip trailing comments to avoid false-positives
         seen_on_line: set[str] = set()
         for rx in _INPUT_ACTION_RX_LIST:
-            for m in rx.finditer(line):
+            for m in rx.finditer(code):
                 key = m.group(1)
                 if not key or key in valid or key in seen_on_line:
                     continue

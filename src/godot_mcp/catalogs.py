@@ -63,24 +63,16 @@ def catalog(kind: str = "all") -> str:
     return f'Unknown catalog "{kind}". Available: {avail}'
 
 
-_SKIP_DIRS = {".godot", ".git", ".import"}
 _valid_cache: dict[str, tuple] = {}  # pattern -> (gd_signature, result_set)
 
 
-def _gd_signature() -> tuple[int, float]:
-    """Cheap fingerprint of the project's .gd files (count + mtime sum) — stat only,
-    no reads — so valid_keys can skip the expensive re-scan when nothing changed."""
-    count, mtime_sum = 0, 0.0
-    for dp, dn, fn in os.walk(config.PROJECT_ROOT):
-        dn[:] = [d for d in dn if d not in _SKIP_DIRS]
-        for f in fn:
-            if f.endswith(".gd"):
-                try:
-                    mtime_sum += (Path(dp) / f).stat().st_mtime
-                    count += 1
-                except OSError:
-                    pass
-    return (count, round(mtime_sum, 3))
+def _gd_signature() -> frozenset:
+    """Fingerprint of the project's .gd files as a frozenset of (relpath, mtime) pairs.
+
+    Delegates to config.gd_signature() — the single shared implementation (C23).
+    Detects renames that preserve file count and mtime-sum.
+    """
+    return config.gd_signature()
 
 
 def valid_keys(valid_pattern: str) -> set[str]:
@@ -96,7 +88,7 @@ def valid_keys(valid_pattern: str) -> set[str]:
         return cached[1]
     out: set[str] = set()
     for dp, dn, fn in os.walk(config.PROJECT_ROOT):
-        dn[:] = [d for d in dn if d not in _SKIP_DIRS]
+        dn[:] = [d for d in dn if d not in config._GD_SKIP_DIRS]
         for f in fn:
             if f.endswith(".gd"):
                 out.update(rx.findall(config.read_text(Path(dp) / f) or ""))

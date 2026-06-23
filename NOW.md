@@ -26,7 +26,8 @@ Next physical action:
 - [x] Phase 6.5-P3 shipped — edit-path integrity (C1–C4, C6, C7-partial). 221 tests green. `f196fed`
 - [x] Phase 6.5-P4 shipped — engine API indexing + search ranking (C17, C21, C22). 249 tests green. `aecb79e`
 - [x] Phase 6.5-P5 shipped — docs fetch + cache correctness (C18, C19, C20). 269 tests green. (+ fixed flaky import-safety tests: `0778033`)
-- [ ] **Phase 6.5-P6** — doctor drift + remaining grounding parsers (C17-doctor, C23–C31 where cheap). First action: gantry:build Phase 6.
+- [x] Phase 6.5-P6 shipped — doctor drift + remaining grounding parsers (C17-doctor, C23, C25, C27, C28, C30, C31). C24/C26 parked. 280 tests green. **Phase 6.5 hardening batch COMPLETE.**
+- [ ] **Phase 6.6 — tool-surface settle** (rename map). First action: human confirms the `godot_editor_*`→`editor_*` rename map (Queue item 3), then gantry:build.
 
 Rule: when you finish a step, check it off and write the next single tiny step. Do not start another thread until this one ships or you consciously move it to the Queue.
 

@@ -139,6 +139,12 @@ def _uninstall(root: Path) -> int:
     if skill.exists():
         shutil.rmtree(skill)
         removed.append(".claude/skills/godot/")
+    # C31: remove the bridge addon so the TCP-listening plugin is not left installed
+    addon_dir = root / "addons" / "godot_grounding_bridge"
+    if addon_dir.exists():
+        shutil.rmtree(addon_dir)
+        removed.append("addons/godot_grounding_bridge/")
+        print("  Note: re-open Godot to deactivate the plugin and remove the editor_plugins entry from project.godot.")
 
     print(f"Uninstalled godot-grounding from {root}:")
     for r in removed:
@@ -194,10 +200,10 @@ def main(argv: list[str] | None = None) -> int:
     addon_src = REPO / "addon" / "godot_grounding_bridge"
     if addon_src.exists():
         addon_dst = root / "addons" / "godot_grounding_bridge"
-        addon_dst.mkdir(parents=True, exist_ok=True)
-        for f in addon_src.iterdir():
-            if f.is_file():
-                (addon_dst / f.name).write_text(f.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+        # C31: use copytree so subdirectories are not silently dropped
+        if addon_dst.exists():
+            shutil.rmtree(addon_dst)
+        shutil.copytree(str(addon_src), str(addon_dst))
         print(f"+ wrote {addon_dst.relative_to(root)}/  (optional: enable in Project > Project Settings > Plugins for the live editor bridge)")
 
     print("\nNext:")

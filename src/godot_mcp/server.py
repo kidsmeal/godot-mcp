@@ -226,7 +226,11 @@ def godot_run_tests(filter: str = "", integration: bool = False, timeout: int = 
     """Run the project's headless test suite (profile [tests]) and return a structured
     pass/fail summary: files run, tests/assertions passed-failed, failing files, failed
     assertions. 'filter' is passed to the runner as `-- --test-filter <filter>`.
-    integration=True runs the integration scene. Exit code 0 = all passed."""
+    integration=True runs the integration scene. Exit code 0 = all passed.
+
+    Note (C28): --test-filter is only understood by the 'custom' test framework runner.
+    With gut or gdunit4, the filter argument is passed but may be silently ignored by
+    the framework — the full suite runs and the result still reports as complete."""
     return runner.run_tests(filter, integration, timeout)
 
 
