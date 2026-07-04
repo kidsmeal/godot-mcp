@@ -26,7 +26,24 @@ from godot_mcp import (
     scene,
 )
 
-mcp = FastMCP("godot-grounding")
+mcp = FastMCP(
+    "godot-grounding",
+    instructions="""\
+Shared conventions for every tool below (not repeated per-tool):
+
+- Paths: any script_path/scene_path argument is a project-relative res:// path.
+- Containment: a path that escapes the project root is refused, always in the
+  same shape: "Refused: <path> resolves outside the project root."
+- Suppressing a lint finding: add `# lint: ignore` on the offending line to
+  suppress all findings on it, or `# lint: ignore=rule,rule` to suppress only
+  the named rule(s) (comma-separated).
+- The grounding loop this server is built around: ground first (godot_class,
+  godot_member, project_convention, project_catalog, etc.) before writing code,
+  then make linted edits (godot_write_script/godot_patch_script/godot_fix_script,
+  which parse-check and roll back on error), then confirm with a test/run step
+  (godot_check, godot_validate, godot_run_tests) before trusting the result.
+""",
+)
 
 
 # --- Engine grounding -------------------------------------------------------
@@ -112,7 +129,7 @@ def project_find_files(subdir: str = ".", pattern: str = "*", limit: int = 500) 
 def project_scene(scene_path: str) -> str:
     """Summarize a .tscn without opening the editor: header (uid/format), ext_resource
     dependencies, sub_resources, the node tree (name, type or instanced scene, attached
-    script), and signal connections. scene_path is a res:// path."""
+    script), and signal connections."""
     return scene.describe(scene_path)
 
 
@@ -120,7 +137,7 @@ def project_scene(scene_path: str) -> str:
 def godot_lint_scene(scene_path: str) -> str:
     """Lint a .tscn for silent breakage: ext_resource paths that don't exist,
     .godot/imported references, and type-as-name nodes (e.g. a node literally named
-    'Area2D'). scene_path is a res:// path."""
+    'Area2D')."""
     try:
         config.resolve_project_path(scene_path)
     except config.PathEscapeError:
@@ -199,8 +216,7 @@ def godot_lint_source(source: str, path: str = "") -> str:
 def godot_write_script(script_path: str, content: str, enforce_conventions: bool = False) -> str:
     """Write a full GDScript file safely: backs up, writes, runs Godot --check-only,
     and ROLLS BACK on any parse error (never leaves the project non-parsing). Returns
-    lint findings. enforce_conventions=True refuses writes that have convention errors.
-    script_path is a res:// path."""
+    lint findings. enforce_conventions=True refuses writes that have convention errors."""
     return edit.write_script(script_path, content, enforce_conventions)
 
 
@@ -208,15 +224,14 @@ def godot_write_script(script_path: str, content: str, enforce_conventions: bool
 def godot_fix_script(script_path: str) -> str:
     """Apply safe, mechanical lint fixes and re-verify through the parse-checked writer
     (rolls back if anything breaks): untyped `var x = v` → `var x := v`, and add `-> void`
-    to functions with no value-returning return. script_path is a res:// path."""
+    to functions with no value-returning return."""
     return edit.auto_fix(script_path)
 
 
 @mcp.tool()
 def godot_patch_script(script_path: str, old_string: str, new_string: str, enforce_conventions: bool = False) -> str:
     """Replace an exact unique substring in a GDScript, then parse-check with rollback
-    (like godot_write_script). old_string must match the file exactly and uniquely.
-    script_path is a res:// path."""
+    (like godot_write_script). old_string must match the file exactly and uniquely."""
     return edit.patch_script(script_path, old_string, new_string, enforce_conventions)
 
 
@@ -237,7 +252,7 @@ def godot_run_tests(filter: str = "", integration: bool = False, timeout: int = 
 @mcp.tool()
 def godot_check(script_path: str, timeout: int = 60) -> str:
     """Parse-check a single GDScript WITHOUT running it (`--check-only --script`).
-    Catches syntax/parse/type errors before F5. script_path is a res:// path."""
+    Catches syntax/parse/type errors before F5."""
     return runner.check_script(script_path, timeout)
 
 
@@ -245,7 +260,7 @@ def godot_check(script_path: str, timeout: int = 60) -> str:
 def godot_run_script(script_path: str, timeout: int = 120) -> str:
     """Run a headless GDScript that `extends SceneTree`/`MainLoop` (e.g. dev/validator
     scripts) and return its output + exit code. Refuses other scripts (which can pop a
-    blocking editor dialog). script_path is a res:// path."""
+    blocking editor dialog)."""
     return runner.run_script(script_path, timeout)
 
 
@@ -259,9 +274,7 @@ def godot_validate(script_path: str, timeout: int = 60) -> str:
 
     Uses the plugin-owned data/validate_script.gd harness — the harness runs by
     absolute path and is NEVER written into the project, so there is no leak risk.
-    Verdict comes from the engine log (exit code is unreliable for this harness).
-
-    script_path is a res:// path."""
+    Verdict comes from the engine log (exit code is unreliable for this harness)."""
     return runner.validate_with_autoloads(script_path, timeout)
 
 
@@ -296,7 +309,7 @@ def editor_scene_tree() -> str:
 
 @mcp.tool()
 def editor_open_scene(scene_path: str) -> str:
-    """Open a scene (res:// path) in the Godot editor via the editor bridge addon."""
+    """Open a scene in the Godot editor via the editor bridge addon."""
     try:
         resolved = config.resolve_project_path(scene_path)
     except config.PathEscapeError:
