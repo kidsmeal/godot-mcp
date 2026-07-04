@@ -27,7 +27,8 @@ Next physical action:
 - [x] Phase 6.5-P4 shipped — engine API indexing + search ranking (C17, C21, C22). 249 tests green. `aecb79e`
 - [x] Phase 6.5-P5 shipped — docs fetch + cache correctness (C18, C19, C20). 269 tests green. (+ fixed flaky import-safety tests: `0778033`)
 - [x] Phase 6.5-P6 shipped — doctor drift + remaining grounding parsers (C17-doctor, C23, C25, C27, C28, C30, C31). C24/C26 parked. 280 tests green. **Phase 6.5 hardening batch COMPLETE.**
-- [ ] **Phase 6.6 — tool-surface settle** (rename map). First action: human confirms the `godot_editor_*`→`editor_*` rename map (Queue item 3), then gantry:build.
+- [x] Rename map APPROVED (2026-06-23): 5 live-editor-bridge tools godot_*→editor_*: `godot_editor_ping`→`editor_ping`, `godot_editor_scene_tree`→`editor_scene_tree`, `godot_run_game`→`editor_run_game`, `godot_stop_game`→`editor_stop_game`, `godot_open_scene`→`editor_open_scene`. Other 25 tools unchanged.
+- [ ] **Phase 6.6 — tool-surface settle**. Planning now via gantry:plan. Scope: (a) apply rename map + README + agent templates + ci_smoke roster in one diff; (b) MCP server `instructions` block + docstring slim pass; (c) response caps on fat tools (C22 godot_class budget [partly done P4], doc-desc first-sentence default + full_docs param). First action: gantry:build P1 once plan lands.
 
 Rule: when you finish a step, check it off and write the next single tiny step. Do not start another thread until this one ships or you consciously move it to the Queue.
 
