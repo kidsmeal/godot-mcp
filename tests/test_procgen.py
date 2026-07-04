@@ -184,6 +184,17 @@ class TestConfigValidation:
         ]
         procgen.validate_config(cfg)
 
+    def test_non_contiguous_frame_offset_rejected(self):
+        """P1-review carry-in: validate_config is the SOLE source of truth for
+        the frame_offset contiguity rule (compose_build_script no longer
+        re-checks it). A diagonal/other offset must still be rejected here."""
+        cfg = _min_cfg()
+        cfg["animation"] = [
+            {"atlas": "ground", "base_region": [[0, 0], [0, 0]], "frames": 2, "frame_offset": [1, 1]}
+        ]
+        with pytest.raises(procgen.ConfigError, match="frame_offset must be"):
+            procgen.validate_config(cfg)
+
     def test_unknown_terrain_assign_atlas_errors(self):
         cfg = _min_cfg()
         cfg["terrain_set"] = [{"mode": "match_sides", "terrains": [{"name": "grass"}]}]

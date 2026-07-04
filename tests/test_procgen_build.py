@@ -159,6 +159,57 @@ func _initialize() -> void:
         assert "FRAMES=2" in out, out                    # animation survived
         assert "MODE=0" in out, out                      # DEFAULT (synchronized)
 
+    def test_plain_config_creates_no_physics_or_nav_layer(self, tmp_project, tmp_path, monkeypatch):
+        """P1-review carry-in: a config that declares neither collision nor
+        navigation must not bake an unused physics/nav layer into the .tres."""
+        texture_res = self._make_fixture_atlas(tmp_project, monkeypatch)
+        cfg = f"""
+[tileset]
+tile_size = [8, 8]
+
+[[atlas]]
+id = "ground"
+texture = "{texture_res}"
+scan = "non_transparent"
+"""
+        p = tmp_path / "plain.toml"
+        p.write_text(cfg, encoding="utf-8")
+        result = procgen.tileset_build(str(p), "res://tilesets/plain.tres")
+        assert result.startswith("OK"), result
+
+        dump = r"""extends SceneTree
+func _initialize() -> void:
+	var ts := ResourceLoader.load("res://tilesets/plain.tres", "TileSet", ResourceLoader.CACHE_MODE_IGNORE) as TileSet
+	print("PHYSICS_LAYERS=" + str(ts.get_physics_layers_count()))
+	print("NAV_LAYERS=" + str(ts.get_navigation_layers_count()))
+	quit(0)
+"""
+        r = runner.run_temp_probe(dump, timeout=60)
+        out = r.get("out") or ""
+        assert "PHYSICS_LAYERS=0" in out, out
+        assert "NAV_LAYERS=0" in out, out
+
+    def test_physics_declared_creates_exactly_one_physics_layer(self, tmp_project, tmp_path, monkeypatch):
+        """The golden config declares [physics].default_full_square, so exactly
+        one physics layer is created (and still no nav layer, since the config
+        has no navigation section)."""
+        texture_res = self._make_fixture_atlas(tmp_project, monkeypatch)
+        cfg_path = self._golden_config(tmp_path, texture_res)
+        result = procgen.tileset_build(cfg_path, "res://tilesets/plains2.tres")
+        assert result.startswith("OK"), result
+
+        dump = r"""extends SceneTree
+func _initialize() -> void:
+	var ts := ResourceLoader.load("res://tilesets/plains2.tres", "TileSet", ResourceLoader.CACHE_MODE_IGNORE) as TileSet
+	print("PHYSICS_LAYERS=" + str(ts.get_physics_layers_count()))
+	print("NAV_LAYERS=" + str(ts.get_navigation_layers_count()))
+	quit(0)
+"""
+        r = runner.run_temp_probe(dump, timeout=60)
+        out = r.get("out") or ""
+        assert "PHYSICS_LAYERS=1" in out, out
+        assert "NAV_LAYERS=0" in out, out
+
     def test_more_than_one_terrain_rejected_before_launch(self, tmp_project, tmp_path):
         cfg = """
 [tileset]

@@ -208,6 +208,42 @@ _STRATEGY_TABLES = {
     "blob16_corners": blob16_corners_table,
 }
 
+# All 12 CellNeighbor bit names this module knows about (sides, diagonal
+# corners, and the axis-aligned corner-only bits), used by the audit tool to
+# query `is_valid_terrain_peering_bit` per tile — mode-agnostic, since the
+# engine itself already knows which bits are valid for a tile's terrain set.
+_ALL_BIT_NAMES: tuple[str, ...] = (
+    *_SIDE_BITS.values(),
+    *_CORNER_BITS.values(),
+    *_CORNER_ONLY_BITS.values(),
+)
+
+_MODE_TABLE_FN = {
+    "MATCH_CORNERS_AND_SIDES": blob47_table,
+    "MATCH_SIDES": blob16_sides_table,
+    "MATCH_CORNERS": blob16_corners_table,
+}
+
+
+def expected_signature_set(mode: str) -> set[frozenset[str]]:
+    """The expected itself-vs-empty peering-bit signature classes for a
+    terrain set's *mode*, DERIVED from the mode's valid-bit enumeration — never
+    a hardcoded count. Reuses the same canonical tables `tileset_build` uses to
+    lay out blob sheets (`blob47_table` for MATCH_CORNERS_AND_SIDES,
+    `blob16_sides_table` / `blob16_corners_table` for the other two modes), so
+    the audit's "what should exist" checklist and the builder's "where do these
+    classes live on a blob sheet" layout can never drift apart. A signature is
+    a frozenset of CellNeighbor bit names (order-independent); the number of
+    classes falls out of the table's size (47 for corners+sides, 16 for the
+    single-axis modes) rather than being written down as a literal anywhere.
+
+    Raises ValueError for a mode this module doesn't recognize.
+    """
+    fn = _MODE_TABLE_FN.get(mode)
+    if fn is None:
+        raise ValueError(f"unknown terrain set mode: {mode!r}")
+    return {frozenset(bits) for bits in fn().values()}
+
 
 # ---------------------------------------------------------------------------
 # Config validation
@@ -360,13 +396,15 @@ def compose_build_script(cfg: dict, out_path_res: str, nonce: str) -> str:
     """Compose the single GDScript that builds and saves the TileSet.
 
     The op-order below is load-bearing (verified engine facts, procgen-tools.md
-    §1): create TileSet -> custom-data/physics/nav layers -> terrain sets +
-    terrains -> per atlas TileSetAtlasSource (texture, texture_region_size) ->
-    apply animation map + RESERVE frame regions -> scan remaining sheet OR take
-    explicit tiles -> create_tile per base cell + animation columns/frames/
-    duration/mode -> per tile get_tile_data(coords, 0): terrain_set FIRST, then
-    terrain, then peering bits, then collision polygons + custom data ->
-    ResourceSaver.save -> reload sanity check.
+    §1): create TileSet -> custom-data layer, then physics/nav layers IF the
+    config actually declares them (P1-review carry-in: no more unconditional
+    empty nav layer on every tileset) -> terrain sets + terrains -> per atlas
+    TileSetAtlasSource (texture, texture_region_size) -> apply animation map +
+    RESERVE frame regions -> scan remaining sheet OR take explicit tiles ->
+    create_tile per base cell + animation columns/frames/duration/mode -> per
+    tile get_tile_data(coords, 0): terrain_set FIRST, then terrain, then
+    peering bits, then collision polygons + custom data -> ResourceSaver.save
+    -> reload sanity check.
     """
     begin = f"{_SENTINEL_BEGIN}:{nonce}"
     end = f"{_SENTINEL_END}:{nonce}"
@@ -376,10 +414,19 @@ def compose_build_script(cfg: dict, out_path_res: str, nonce: str) -> str:
 
     # Build a fully-resolved plan dict in Python and hand it to the GDScript as
     # a JSON literal — the GDScript stays a dumb executor of a validated plan.
+    physics_full_square = (cfg.get("physics") or {}).get("default_full_square") or []
     plan: dict = {
         "tile_size": [tile_size[0], tile_size[1]],
         "custom_data": [],
-        "physics_full_square": (cfg.get("physics") or {}).get("default_full_square") or [],
+        "physics_full_square": physics_full_square,
+        # P1-review carry-in: layer creation is conditional on the config
+        # actually declaring collision/navigation, so a plain tileset doesn't
+        # carry an unused empty nav layer (or an unused physics layer). The
+        # config currently has no [navigation] section at all — navigation
+        # layers are only ever created if a future config section asks for
+        # one — so `has_navigation` is wired for that but always False today.
+        "has_physics": bool(physics_full_square),
+        "has_navigation": False,
         "terrain_sets": [],
         "terrain_index": {},  # terrain name -> [set_idx, terrain_idx]
         "atlases": [],
@@ -439,18 +486,12 @@ def compose_build_script(cfg: dict, out_path_res: str, nonce: str) -> str:
             # rectangle of `columns` width, contiguous from the base coords, so
             # set_tile_animation_columns must MATCH the reserved layout: a
             # horizontal strip (frame_offset [1,0]) => columns = frames; a
-            # vertical strip (frame_offset [0,1]) => columns = 1. Any other
-            # offset can't be expressed by the engine's column layout — flag it.
-            if fy == 0 and fx == 1:
-                columns = frames
-            elif fx == 0 and fy == 1:
-                columns = 1
-            else:
-                raise ConfigError(
-                    f"animation on atlas {aid!r}: frame_offset {[fx, fy]} is not a contiguous "
-                    "horizontal ([1,0]) or vertical ([0,1]) strip; Godot's tile animation only "
-                    "supports contiguous frames laid out by column count"
-                )
+            # vertical strip (frame_offset [0,1]) => columns = 1. The contiguity
+            # rule itself (offset must be [1,0] or [0,1]) is validated ONCE in
+            # validate_config — this is the single source of truth (P1 review
+            # carry-in); by the time a cfg reaches this function it has already
+            # passed that check, so only the vertical case needs branching here.
+            columns = 1 if (fx == 0 and fy == 1) else frames
             atlas_plan["animations"].append(
                 {
                     "base_cells": base_cells,
@@ -475,7 +516,7 @@ def compose_build_script(cfg: dict, out_path_res: str, nonce: str) -> str:
 
     # The GDScript. Kept as a here-doc; the plan JSON is injected as a string
     # literal and parsed with JSON.parse_string inside the script.
-    script = f'''extends SceneTree
+    return f'''extends SceneTree
 
 const PLAN_JSON := {json.dumps(plan_json)}
 const OUT_PATH := {json.dumps(out_path_res)}
@@ -508,9 +549,13 @@ func _build(warnings: Array) -> Dictionary:
 \t\ttileset.set_custom_data_layer_name(i, cd["name"])
 \t\ttileset.set_custom_data_layer_type(i, _variant_type(cd["type"]))
 
-\t# --- physics + navigation layers (one each; edge collision lives on layer 0) ---
-\ttileset.add_physics_layer(0)
-\ttileset.add_navigation_layer(0)
+\t# --- physics + navigation layers (P1-review carry-in: conditional on the
+\t# config actually declaring collision/navigation, so a plain tileset doesn't
+\t# carry an empty nav layer or an unused physics layer) ---
+\tif bool(plan.get("has_physics", false)):
+\t\ttileset.add_physics_layer(0)
+\tif bool(plan.get("has_navigation", false)):
+\t\ttileset.add_navigation_layer(0)
 
 \t# --- terrain sets + terrains (terrain_set must exist before any tile sets terrain) ---
 \tfor ti in range((plan["terrain_sets"] as Array).size()):
@@ -763,7 +808,6 @@ func _cell_neighbor(name: String) -> int:
 \t\t"LEFT_CORNER": return TileSet.CELL_NEIGHBOR_LEFT_CORNER
 \treturn -1
 '''
-    return script
 
 
 # ---------------------------------------------------------------------------
@@ -877,3 +921,417 @@ def _parse_check(source: str) -> str:
         return ""
     msg = ((r.get("err") or "") + "\n" + (r.get("out") or "")).strip()
     return msg[-2000:]
+
+
+# ---------------------------------------------------------------------------
+# terrain_audit (Phase 2)
+# ---------------------------------------------------------------------------
+#
+# GDScript loads the .tres and dumps RAW per-tile facts only (terrain_set,
+# terrain, which of the 12 known peering bits are valid + set-to-self, and
+# animation frames/duration/mode). ALL interpretation — expected-signature
+# computation, coverage/missing/duplicate classification, law violations,
+# unused-tile detection, animation-sync linting — happens in Python against
+# that raw dump, so the "what does clean look like" logic lives in one place
+# (testable without Godot) and stays in sync with expected_signature_set().
+
+
+def compose_audit_script(tileset_path_res: str, nonce: str) -> str:
+    """Compose the GDScript that loads *tileset_path_res* and dumps raw
+    per-terrain-set-mode, per-tile terrain/peering-bit/animation facts.
+
+    Dumps EVERY tile across every source (alt 0 only, per the project's
+    verified-facts note that alt 0 is the main tile), not just those in a
+    single requested terrain_set — filtering by terrain_set happens in Python
+    (`_audit_report`) so the raw dump is reusable for any requested scope
+    without re-running Godot.
+    """
+    begin = f"{_SENTINEL_BEGIN}:{nonce}"
+    end = f"{_SENTINEL_END}:{nonce}"
+    bit_names_gd = json.dumps(list(_ALL_BIT_NAMES))
+
+    return f'''extends SceneTree
+
+const TILESET_PATH := {json.dumps(tileset_path_res)}
+const BIT_NAMES: Array = {bit_names_gd}
+
+func _initialize() -> void:
+\tvar report: Dictionary = _dump()
+\tprint("{begin}")
+\tprint(JSON.stringify(report))
+\tprint("{end}")
+\tquit(0)
+
+func _dump() -> Dictionary:
+\tvar ts := ResourceLoader.load(TILESET_PATH, "TileSet", ResourceLoader.CACHE_MODE_IGNORE) as TileSet
+\tif ts == null:
+\t\treturn {{"ok": false, "error": "could not load TileSet at " + TILESET_PATH}}
+
+\tvar terrain_sets: Array = []
+\tfor tsi in range(ts.get_terrain_sets_count()):
+\t\tvar terrains: Array = []
+\t\tfor terr_i in range(ts.get_terrains_count(tsi)):
+\t\t\tterrains.append({{"index": terr_i, "name": ts.get_terrain_name(tsi, terr_i)}})
+\t\tterrain_sets.append({{
+\t\t\t"index": tsi,
+\t\t\t"mode": _mode_name(ts.get_terrain_set_mode(tsi)),
+\t\t\t"terrains": terrains,
+\t\t}})
+
+\tvar tiles: Array = []
+\tfor si in range(ts.get_source_count()):
+\t\tvar sid := ts.get_source_id(si)
+\t\tvar src := ts.get_source(sid) as TileSetAtlasSource
+\t\tif src == null:
+\t\t\tcontinue
+\t\tfor ti in range(src.get_tiles_count()):
+\t\t\tvar coords := src.get_tile_id(ti)
+\t\t\tvar td := src.get_tile_data(coords, 0)
+\t\t\tif td == null:
+\t\t\t\tcontinue
+\t\t\tvar set_bits: Array = []
+\t\t\tfor bn in BIT_NAMES:
+\t\t\t\tvar bit := _cell_neighbor(bn)
+\t\t\t\tif bit < 0:
+\t\t\t\t\tcontinue
+\t\t\t\tif not td.is_valid_terrain_peering_bit(bit):
+\t\t\t\t\tcontinue
+\t\t\t\tif td.get_terrain_peering_bit(bit) == td.terrain:
+\t\t\t\t\tset_bits.append(bn)
+\t\t\tvar custom_data_present := false
+\t\t\tfor cdi in range(ts.get_custom_data_layers_count()):
+\t\t\t\tvar v = td.get_custom_data_by_layer_id(cdi)
+\t\t\t\tif v != null and v != "" and v != 0 and v != false:
+\t\t\t\t\tcustom_data_present = true
+\t\t\t\t\tbreak
+\t\t\tvar frames := src.get_tile_animation_frames_count(coords)
+\t\t\tvar anim = null
+\t\t\tif frames > 1:
+\t\t\t\tvar durations: Array = []
+\t\t\t\tfor f in range(frames):
+\t\t\t\t\tdurations.append(src.get_tile_animation_frame_duration(coords, f))
+\t\t\t\tanim = {{
+\t\t\t\t\t"frames": frames,
+\t\t\t\t\t"durations": durations,
+\t\t\t\t\t"mode": _anim_mode_name(src.get_tile_animation_mode(coords)),
+\t\t\t\t}}
+\t\t\ttiles.append({{
+\t\t\t\t"source_id": sid,
+\t\t\t\t"coords": [coords.x, coords.y],
+\t\t\t\t"terrain_set": td.terrain_set,
+\t\t\t\t"terrain": td.terrain,
+\t\t\t\t"bits": set_bits,
+\t\t\t\t"custom_data": custom_data_present,
+\t\t\t\t"animation": anim,
+\t\t\t}})
+
+\treturn {{
+\t\t"ok": true,
+\t\t"terrain_sets": terrain_sets,
+\t\t"tiles": tiles,
+\t}}
+
+func _mode_name(mode: int) -> String:
+\tmatch mode:
+\t\tTileSet.TERRAIN_MODE_MATCH_CORNERS_AND_SIDES: return "MATCH_CORNERS_AND_SIDES"
+\t\tTileSet.TERRAIN_MODE_MATCH_CORNERS: return "MATCH_CORNERS"
+\t\tTileSet.TERRAIN_MODE_MATCH_SIDES: return "MATCH_SIDES"
+\treturn "UNKNOWN"
+
+func _anim_mode_name(mode: int) -> String:
+\tif mode == TileSetAtlasSource.TILE_ANIMATION_MODE_RANDOM_START_TIMES:
+\t\treturn "RANDOM_START_TIMES"
+\treturn "DEFAULT"
+
+# Same compass-name -> CellNeighbor mapping as the build script (kept in sync
+# by hand; both are static engine-enum tables, not generated from each other).
+func _cell_neighbor(name: String) -> int:
+\tmatch name:
+\t\t"TOP_SIDE": return TileSet.CELL_NEIGHBOR_TOP_SIDE
+\t\t"RIGHT_SIDE": return TileSet.CELL_NEIGHBOR_RIGHT_SIDE
+\t\t"BOTTOM_SIDE": return TileSet.CELL_NEIGHBOR_BOTTOM_SIDE
+\t\t"LEFT_SIDE": return TileSet.CELL_NEIGHBOR_LEFT_SIDE
+\t\t"TOP_RIGHT_CORNER": return TileSet.CELL_NEIGHBOR_TOP_RIGHT_CORNER
+\t\t"BOTTOM_RIGHT_CORNER": return TileSet.CELL_NEIGHBOR_BOTTOM_RIGHT_CORNER
+\t\t"BOTTOM_LEFT_CORNER": return TileSet.CELL_NEIGHBOR_BOTTOM_LEFT_CORNER
+\t\t"TOP_LEFT_CORNER": return TileSet.CELL_NEIGHBOR_TOP_LEFT_CORNER
+\t\t"TOP_CORNER": return TileSet.CELL_NEIGHBOR_TOP_CORNER
+\t\t"RIGHT_CORNER": return TileSet.CELL_NEIGHBOR_RIGHT_CORNER
+\t\t"BOTTOM_CORNER": return TileSet.CELL_NEIGHBOR_BOTTOM_CORNER
+\t\t"LEFT_CORNER": return TileSet.CELL_NEIGHBOR_LEFT_CORNER
+\treturn -1
+'''
+
+
+def _sig_key(bits: list[str]) -> str:
+    """Canonical signature key: comma-joined, sorted bit names ("" = the
+    isolated/no-neighbor signature). Shared by coverage-dict keys and the
+    expected-signature lookup so both sides compare identically."""
+    return ",".join(sorted(bits))
+
+
+def _audit_report(dump: dict, terrain_set: int) -> dict:
+    """Build the terrain_audit report (human table + machine `coverage` dict)
+    from the raw GDScript dump. See `terrain_audit`'s docstring for the
+    `coverage` dict's documented shape — this is the one function that
+    constructs it, so that docstring and this code must be kept in sync.
+    """
+    if not dump.get("ok"):
+        return {"ok": False, "error": dump.get("error", "unknown audit error")}
+
+    all_terrain_sets: list[dict] = dump.get("terrain_sets", [])
+    all_tiles: list[dict] = dump.get("tiles", [])
+
+    scoped_sets = all_terrain_sets if terrain_set == -1 else [ts for ts in all_terrain_sets if ts["index"] == terrain_set]
+    if terrain_set != -1 and not scoped_sets:
+        return {"ok": False, "error": f"terrain_set {terrain_set} does not exist (tileset has {len(all_terrain_sets)})"}
+    scoped_indices = {ts["index"] for ts in scoped_sets}
+
+    errors: list[str] = []
+    warnings: list[str] = []
+    coverage: dict[str, dict] = {}
+
+    # Law violation: more than one terrain in a terrain set. Tileset-wide,
+    # NOT scoped — a violation in a different terrain_set than the one the
+    # caller asked to focus on is still a real data-integrity problem.
+    for ts in all_terrain_sets:
+        if len(ts["terrains"]) > 1:
+            names = ", ".join(t["name"] for t in ts["terrains"])
+            errors.append(
+                f"terrain_set {ts['index']}: {len(ts['terrains'])} terrains ({names}) — "
+                "water-bottom law violation, at most ONE terrain per terrain set is allowed"
+            )
+
+    # Broken ordering: terrain != -1 but terrain_set == -1, anywhere in the
+    # tileset (this is a per-tile data-corruption check, not scoped to the
+    # requested terrain_set — a broken tile has no valid terrain_set to scope by).
+    broken_ordering: list[dict] = []
+    for t in all_tiles:
+        if t["terrain"] != -1 and t["terrain_set"] == -1:
+            broken_ordering.append({"source_id": t["source_id"], "coords": t["coords"]})
+    if broken_ordering:
+        errors.append(
+            f"{len(broken_ordering)} tile(s) have terrain != -1 but terrain_set == -1 (broken ordering — "
+            "terrain_set must be assigned before terrain): "
+            + ", ".join(f"src {b['source_id']} {tuple(b['coords'])}" for b in broken_ordering[:10])
+        )
+
+    # Animation sync lint: every animated tile belonging to a terrain (any
+    # terrain_set, any terrain index >= 0) must share identical frames/
+    # duration and mode == DEFAULT. Scoped to tiles inside the requested
+    # terrain_set(s) when the caller narrowed the audit.
+    animated_terrain_tiles = [
+        t for t in all_tiles
+        if t.get("animation") is not None and t["terrain"] != -1 and t["terrain_set"] in scoped_indices
+    ]
+    if animated_terrain_tiles:
+        first = animated_terrain_tiles[0]["animation"]
+        baseline = (first["frames"], tuple(first["durations"]), first["mode"])
+        desynced = [
+            t for t in animated_terrain_tiles
+            if (t["animation"]["frames"], tuple(t["animation"]["durations"]), t["animation"]["mode"]) != baseline
+        ]
+        non_default = [t for t in animated_terrain_tiles if t["animation"]["mode"] != "DEFAULT"]
+        if desynced or non_default:
+            bad = {(t["source_id"], tuple(t["coords"])) for t in (desynced + non_default)}
+            errors.append(
+                f"{len(bad)} animated terrain tile(s) desync from the baseline "
+                f"(frames={baseline[0]}, durations={list(baseline[1])}, mode={baseline[2]}) — every water-bearing "
+                "animated tile must share identical frames/duration and mode=DEFAULT, or coastlines fall out of "
+                "phase: " + ", ".join(f"src {sid} {coords}" for sid, coords in sorted(bad)[:10])
+            )
+
+    # Per-terrain-set signature coverage.
+    for ts in scoped_sets:
+        tsi = ts["index"]
+        mode = ts["mode"]
+        terrain_names = {t["index"]: t["name"] for t in ts["terrains"]}
+        try:
+            expected = expected_signature_set(mode)
+        except ValueError as e:
+            errors.append(f"terrain_set {tsi}: {e}")
+            continue
+
+        tiles_in_set = [t for t in all_tiles if t["terrain_set"] == tsi and t["terrain"] != -1]
+        by_sig: dict[str, list[dict]] = {}
+        for t in tiles_in_set:
+            key = _sig_key(t["bits"])
+            by_sig.setdefault(key, []).append({"source_id": t["source_id"], "coords": t["coords"]})
+
+        expected_keys = {_sig_key(list(sig)) for sig in expected}
+        covered_keys = set(by_sig.keys())
+        missing_keys = sorted(expected_keys - covered_keys)
+        duplicated_keys = sorted(k for k, tiles in by_sig.items() if len(tiles) > 1)
+        unexpected_keys = sorted(covered_keys - expected_keys)  # covered but not a valid class for this mode
+
+        if unexpected_keys:
+            warnings.append(
+                f"terrain_set {tsi}: {len(unexpected_keys)} tile(s) carry a peering-bit signature that is not "
+                f"a valid class for mode {mode} (engine allowed setting invalid bits; audit ignores them for "
+                "coverage purposes): " + ", ".join(unexpected_keys[:10])
+            )
+
+        terrain_name = next(iter(terrain_names.values()), "")
+        coverage[str(tsi)] = {
+            "mode": mode,
+            "terrain_name": terrain_name,
+            "expected_count": len(expected_keys),
+            "covered_count": len(covered_keys & expected_keys),
+            "missing": missing_keys,
+            "variants": {k: by_sig[k] for k in duplicated_keys},
+            "signatures": by_sig,
+        }
+
+    # Unused tiles: no terrain (terrain == -1) AND no custom data, anywhere
+    # in the dump (not scoped — an unused tile has no terrain_set to scope by).
+    unused = [
+        {"source_id": t["source_id"], "coords": t["coords"]}
+        for t in all_tiles
+        if t["terrain"] == -1 and t["terrain_set"] == -1 and not t.get("custom_data")
+    ]
+
+    return {
+        "ok": True,
+        "errors": errors,
+        "warnings": warnings,
+        "coverage": coverage,
+        "unused_tiles": unused,
+        "broken_ordering": broken_ordering,
+        "tile_count": len(all_tiles),
+        "terrain_set_count": len(all_terrain_sets),
+    }
+
+
+def _format_audit_report(report: dict, tileset_path: str) -> str:
+    if not report.get("ok"):
+        return f"ERROR — terrain_audit: {report.get('error', 'unknown audit error')}"
+
+    lines = [f"Audit: {tileset_path}", f"  tiles: {report['tile_count']}  terrain sets: {report['terrain_set_count']}"]
+
+    errors = report.get("errors") or []
+    warnings = report.get("warnings") or []
+    if not errors and not warnings:
+        lines.append("  CLEAN — no errors or warnings.")
+    if errors:
+        lines.append(f"  ERRORS ({len(errors)}):")
+        for e in errors:
+            lines.append(f"    - {e}")
+    if warnings:
+        lines.append(f"  warnings ({len(warnings)}):")
+        for w in warnings:
+            lines.append(f"    - {w}")
+
+    if report["coverage"]:
+        lines.append("")
+        lines.append("| terrain_set | terrain | mode | expected | covered | missing | variants |")
+        lines.append("|---|---|---|---|---|---|---|")
+        for tsi, cov in report["coverage"].items():
+            lines.append(
+                f"| {tsi} | {cov['terrain_name']} | {cov['mode']} | {cov['expected_count']} | "
+                f"{cov['covered_count']} | {len(cov['missing'])} | {len(cov['variants'])} |"
+            )
+        for tsi, cov in report["coverage"].items():
+            if cov["missing"]:
+                shown = [m if m else "(isolated/no-neighbors)" for m in cov["missing"][:20]]
+                lines.append(f"  terrain_set {tsi} missing signatures: " + "; ".join(shown))
+            if cov["variants"]:
+                vshown = list(cov["variants"].keys())[:10]
+                lines.append(f"  terrain_set {tsi} variant signatures (allowed, seeded pick): " + "; ".join(vshown))
+
+    unused = report.get("unused_tiles") or []
+    if unused:
+        lines.append(f"  unused tiles ({len(unused)}, no terrain + no custom data): " + ", ".join(f"src {u['source_id']} {tuple(u['coords'])}" for u in unused[:10]))
+
+    if report["coverage"]:
+        lines.append("")
+        lines.append("Machine coverage payload (the in-house matcher parses this block; do not reformat by hand):")
+        lines.append("```json")
+        lines.append(json.dumps(report["coverage"], indent=2))
+        lines.append("```")
+
+    return "\n".join(lines)
+
+
+def terrain_audit(tileset_path: str, terrain_set: int = -1, timeout: int = 60) -> str:
+    """Audit a `.tres` TileSet's terrain-peering-bit coverage against the
+    water-bottom law, headless.
+
+    Loads the TileSet, dumps per-tile terrain_set/terrain/peering-bits/
+    animation facts, and reports (per terrain set): the EXPECTED signature set
+    for the set's mode, derived from the mode's valid-bit enumeration (reusing
+    `blob47_table`/`blob16_sides_table`/`blob16_corners_table` — never a
+    hardcoded count: 47 for MATCH_CORNERS_AND_SIDES, 16 for MATCH_SIDES/
+    MATCH_CORNERS, but that number is `len()` of the reused table, not written
+    down anywhere); which signatures are covered/missing/duplicated (a
+    duplicate — two tiles sharing one signature — is ALLOWED and reported as a
+    variant, not an error, since the in-house matcher's seeded pick consumes
+    variants); tiles with terrain != -1 but terrain_set == -1 (broken
+    ordering, reported as an error); terrain sets with more than one terrain
+    (water-bottom law violation, error); unused tiles (no terrain, no custom
+    data); and the animation sync lint (every animated terrain-bearing tile
+    must share identical frames/duration and mode == DEFAULT — a desynced or
+    random-start water tile is an ERROR, not a warning, because it breaks
+    coastline phase-sync).
+
+    terrain_set=-1 (default) audits every terrain set in the TileSet; passing
+    a specific index scopes the coverage table to just that set (broken-
+    ordering, unused-tile, and >1-terrain-per-set checks are NOT scope-limited
+    since those are per-tile/per-set data-integrity checks independent of
+    which set the caller asked to focus on).
+
+    Returns a markdown report AND embeds a machine `coverage` dict the in-house
+    matcher (game repo) consumes, as a fenced ```json code block appended
+    after the markdown (present whenever any terrain sets were audited;
+    absent only on a load/scope error, whose result is a plain "ERROR —"
+    string). `coverage` shape (STABLE — do not rename keys without updating
+    the game-repo matcher spec):
+
+        coverage: dict[str, dict]   # key = str(terrain_set index)
+          mode: str                 # "MATCH_CORNERS_AND_SIDES" | "MATCH_SIDES" | "MATCH_CORNERS"
+          terrain_name: str         # the set's one terrain's name (water-bottom law: exactly one)
+          expected_count: int       # size of the mode's canonical signature-class set
+          covered_count: int        # how many of those classes have >=1 tile
+          missing: list[str]        # signature keys with NO tile (see key format below)
+          variants: dict[str, list[dict]]   # signature keys with >1 tile (allowed)
+          signatures: dict[str, list[dict]] # EVERY covered signature -> its tile(s)
+            each tile dict: {"source_id": int, "coords": [x, y]}
+
+        Signature key format: comma-joined, alphabetically-sorted CellNeighbor
+        bit names present in that signature (e.g. "BOTTOM_SIDE,RIGHT_SIDE"),
+        or "" for the isolated/no-neighbors signature. The matcher computes
+        its own 8-neighbor occupancy signature the same way (sorted, comma-
+        joined bit names) and looks it up directly in `signatures`.
+
+    Never raises — load/scope errors come back as a structured "ERROR —" string.
+    """
+    try:
+        ts_res = config.resolve_project_path(tileset_path)
+    except config.PathEscapeError:
+        return f"Refused: {tileset_path} resolves outside the project root."
+    if tileset_path.startswith("res://"):
+        ts_path_res = tileset_path
+    else:
+        root = config.PROJECT_ROOT.resolve()
+        ts_path_res = "res://" + ts_res.resolve().relative_to(root).as_posix()
+
+    nonce, _, _ = make_sentinels()
+    source = compose_audit_script(ts_path_res, nonce)
+
+    parse_err = _parse_check(source)
+    if parse_err:
+        return f"ERROR — composed audit script did not parse:\n{parse_err}"
+
+    r = runner.run_temp_probe(source, timeout=timeout)
+    if r.get("timeout"):
+        return f"UNAVAILABLE — terrain_audit timed out after {timeout}s (Godot may be unavailable)."
+    if r.get("rc") is None:
+        return f"UNAVAILABLE — {r.get('err') or 'terrain_audit could not launch Godot.'}"
+
+    out = r.get("out") or ""
+    payload, reason = parse_sentinel_json(out, nonce)
+    if payload is None:
+        tail = (r.get("err") or out).strip()
+        return f"UNAVAILABLE — terrain_audit produced no parseable report ({reason}).\n{tail[-800:]}"
+
+    report = _audit_report(payload, terrain_set)
+    return _format_audit_report(report, ts_path_res)

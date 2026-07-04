@@ -341,6 +341,29 @@ def procgen_tileset_build(config_path: str, out_path: str) -> str:
     return procgen.tileset_build(config_path, out_path)
 
 
+@mcp.tool()
+def procgen_terrain_audit(tileset_path: str, terrain_set: int = -1) -> str:
+    """Audit a `.tres` TileSet's terrain-peering-bit coverage against the
+    water-bottom law, headless.
+
+    tileset_path is the project-relative res:// path to the TileSet.
+    terrain_set=-1 (default) audits every terrain set; pass a specific index
+    to scope the coverage table to just that set. Reports, per terrain set,
+    the expected signature-class set for the set's mode (derived from the
+    mode's valid peering bits, e.g. 47 classes for MATCH_CORNERS_AND_SIDES,
+    16 for MATCH_SIDES/MATCH_CORNERS — never a hardcoded count) and which
+    signatures are covered / missing / duplicated (duplicates are allowed —
+    flagged as variants, since the in-house matcher's seeded pick consumes
+    them). Also flags: tiles with terrain != -1 but terrain_set == -1
+    (broken ordering), terrain sets with more than one terrain (water-bottom
+    law violation), unused tiles, and animation desync (every animated
+    terrain tile must share identical frames/duration and mode=DEFAULT — an
+    error, since it breaks coastline phase-sync). Returns a markdown report
+    plus a machine `coverage` dict the game repo's in-house matcher consumes
+    (shape documented in procgen.terrain_audit's docstring)."""
+    return procgen.terrain_audit(tileset_path, terrain_set)
+
+
 def main() -> None:
     mcp.run()
 

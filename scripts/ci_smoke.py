@@ -66,6 +66,7 @@ EXPECTED_TOOLS = {
     "project_classes",
     "project_layers",
     "procgen_tileset_build",
+    "procgen_terrain_audit",
 }
 
 names = {t.name for t in asyncio.run(mcp.list_tools())}
