@@ -13,6 +13,8 @@
 
 ## Phase 0: recon and harness
 
+**Tool family (decided 2026-07-03):** all 6 tools register under the **`procgen_*`** prefix — `procgen_tileset_build`, `procgen_terrain_audit`, `procgen_worldgen_preview`, `procgen_island_preview`, `procgen_chunk_lint`, `procgen_gen_smoke` (rationale + the shorthand→registered mapping in `procgen-tools.md` §2). This joins the families settled in Phase 6.6 (`godot_*`/`project_*`/`editor_*`). Add each new tool to `scripts/ci_smoke.py`'s exact-roster `EXPECTED_TOOLS` set in the same commit that adds it (Phase 4 pinned the roster; a tool missing from it fails CI).
+
 Read the mcp repo (`main.py` and however tools are modularized), then add a `procgen` tool module in the same style, registered behind the same config plumbing. Add one throwaway `procgen_ping` tool proving registration, then delete it in the same phase once the first real tool lands. Decide (and write down in the module docstring) the temp-script pattern: compose GDScript to the OS temp dir, run via the existing headless-run helper, parse JSON from stdout between sentinel lines (match whatever `godot_run_script` already does).
 
 Exit criteria: module registered, a trivial headless round-trip (GDScript prints JSON, Python parses it) works on the capsulecastle project profile.

@@ -23,6 +23,19 @@ Sources: docs.godotengine.org class_tileset / class_tilesetatlassource / class_t
 
 ## 2. The tools to build (ranked)
 
+**Tool naming (decided 2026-07-03).** The suite registers under a new **`procgen_*`** family, joining the naming families settled in Phase 6.6 (`godot_*` engine grounding + validate/edit/test, `project_*` project grounding, `editor_*` live editor bridge). `procgen_` is the accurate umbrella — it covers both the tileset-construction tools (T1/T2/T5) and the generation-preview tools (T3/T4/T6); `worldgen_*` was rejected because it mischaracterizes tileset building. The bare tool names used throughout this doc and the sibling plan are shorthand for their registered `procgen_`-prefixed form:
+
+| shorthand (used below) | registered name |
+|---|---|
+| `tileset_build` | `procgen_tileset_build` |
+| `terrain_audit` | `procgen_terrain_audit` |
+| `worldgen_preview` | `procgen_worldgen_preview` |
+| `island_preview` | `procgen_island_preview` |
+| `chunk_lint` | `procgen_chunk_lint` |
+| `gen_smoke` | `procgen_gen_smoke` |
+
+(`procgen_worldgen_preview` / `procgen_gen_smoke` read slightly redundant; Phase 0 may tighten those two nouns — e.g. `procgen_world_preview` / `procgen_smoke` — but the `procgen_` family prefix is locked.)
+
 | # | Tool | What it does | Grounding |
 |---|---|---|---|
 | T1 | `tileset_build(pack_config)` | Generate a `.tres` TileSet from a declarative per-pack config (atlas sources, sheet scan honoring transparent cells, terrain sets + peering bits, physics/nav polygons, custom-data layers for biome metadata). Bakes tile animation (frames/columns/separation/duration; mode locked to DEFAULT for water-bearing tiles); the sheet scanner is animation-aware (frame regions consume real atlas grid space and are reserved, never registered as tiles); bakes per-signature-class collision polygon templates on edge tiles; validation enforces one terrain per terrain set (the law). Runs a headless Godot script, parse-checked like the mcp's existing write tools. | fully verified, build first |
