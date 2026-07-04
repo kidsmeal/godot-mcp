@@ -104,20 +104,16 @@ def parse_sentinel_json(out: str, nonce: str) -> tuple[dict | None, str]:
 # Godot TileSet.CellNeighbor bit names, by our compass shorthand.
 # Sides for MATCH_SIDES / MATCH_CORNERS_AND_SIDES:
 _SIDE_BITS = {"N": "TOP_SIDE", "E": "RIGHT_SIDE", "S": "BOTTOM_SIDE", "W": "LEFT_SIDE"}
-# Diagonal corners for MATCH_CORNERS_AND_SIDES:
+# Diagonal corners, used by BOTH MATCH_CORNERS_AND_SIDES and MATCH_CORNERS.
+# The axis-aligned CellNeighbor.*_CORNER bits (TOP_CORNER, RIGHT_CORNER, ...)
+# are for hex/isometric grids only — `is_valid_terrain_peering_bit` rejects
+# them on a square-grid MATCH_CORNERS terrain set, which is the only grid
+# shape this module builds. Do not reintroduce an axis-aligned corner table.
 _CORNER_BITS = {
     "NE": "TOP_RIGHT_CORNER",
     "SE": "BOTTOM_RIGHT_CORNER",
     "SW": "BOTTOM_LEFT_CORNER",
     "NW": "TOP_LEFT_CORNER",
-}
-# The 4 side-of-corner bits for MATCH_CORNERS (corner-only mode uses the
-# axis-aligned CORNER bits, not the diagonal ones):
-_CORNER_ONLY_BITS = {
-    "N": "TOP_CORNER",
-    "E": "RIGHT_CORNER",
-    "S": "BOTTOM_CORNER",
-    "W": "LEFT_CORNER",
 }
 
 _SIDES = ("N", "E", "S", "W")
@@ -190,15 +186,18 @@ def blob16_corners_table(width: int = 4) -> dict[tuple[int, int], list[str]]:
     """Map grid offset -> corner-bit names for a 16-tile blob under
     MATCH_CORNERS.
 
-    Corner-only mode uses the axis-aligned CORNER peering bits (TOP_CORNER,
-    RIGHT_CORNER, BOTTOM_CORNER, LEFT_CORNER), one per side direction. All 16
-    masks are valid, laid out row-major at *width*.
+    On a square grid, MATCH_CORNERS's valid peering bits are the 4 DIAGONAL
+    corner bits (TOP_RIGHT_CORNER, BOTTOM_RIGHT_CORNER, BOTTOM_LEFT_CORNER,
+    TOP_LEFT_CORNER) — the same `_CORNER_BITS` blob47 uses for its corners.
+    Unlike blob47's corners (which require both adjacent sides filled),
+    MATCH_CORNERS has no side bits to gate on, so all 16 subsets of the 4
+    diagonal corners are valid classes, laid out row-major at *width*.
     """
     table: dict[tuple[int, int], list[str]] = {}
     for cmask in range(16):
-        corners = [_SIDES[i] for i in range(4) if cmask & (1 << i)]
+        corners = [_CORNERS[i] for i in range(4) if cmask & (1 << i)]
         col, row = cmask % width, cmask // width
-        table[(col, row)] = [_CORNER_ONLY_BITS[c] for c in corners]
+        table[(col, row)] = [_CORNER_BITS[c] for c in corners]
     return table
 
 
@@ -208,14 +207,16 @@ _STRATEGY_TABLES = {
     "blob16_corners": blob16_corners_table,
 }
 
-# All 12 CellNeighbor bit names this module knows about (sides, diagonal
-# corners, and the axis-aligned corner-only bits), used by the audit tool to
-# query `is_valid_terrain_peering_bit` per tile — mode-agnostic, since the
-# engine itself already knows which bits are valid for a tile's terrain set.
+# All 8 CellNeighbor bit names this module knows about (sides + diagonal
+# corners — the only bits valid on the square grids this module builds), used
+# by the audit tool to query `is_valid_terrain_peering_bit` per tile —
+# mode-agnostic, since the engine itself already knows which bits are valid
+# for a tile's terrain set. Axis-aligned CORNER bits (TOP_CORNER, ...) are for
+# hex/isometric grids and are deliberately excluded so they can never be
+# emitted or queried here.
 _ALL_BIT_NAMES: tuple[str, ...] = (
     *_SIDE_BITS.values(),
     *_CORNER_BITS.values(),
-    *_CORNER_ONLY_BITS.values(),
 )
 
 _MODE_TABLE_FN = {
@@ -1027,7 +1028,7 @@ def _parse_check(source: str) -> str:
 # ---------------------------------------------------------------------------
 #
 # GDScript loads the .tres and dumps RAW per-tile facts only (terrain_set,
-# terrain, which of the 12 known peering bits are valid + set-to-self, and
+# terrain, which of the 8 known peering bits are valid + set-to-self, and
 # animation frames/duration/mode). ALL interpretation — expected-signature
 # computation, coverage/missing/duplicate classification, law violations,
 # unused-tile detection, animation-sync linting — happens in Python against

@@ -122,12 +122,28 @@ class TestBlob16Tables:
         for bits in table.values():
             assert set(bits) <= allowed
 
-    def test_corners_table_has_16_entries_corner_bits_only(self):
+    def test_corners_table_has_16_entries_diagonal_corner_bits_only(self):
+        """MATCH_CORNERS on a square grid uses the DIAGONAL corner bits (the
+        same ones blob47 uses), NOT the axis-aligned TOP_CORNER/RIGHT_CORNER/
+        BOTTOM_CORNER/LEFT_CORNER bits — those are hex/isometric-only and
+        `is_valid_terrain_peering_bit` rejects them on a square grid."""
         table = procgen.blob16_corners_table()
         assert len(table) == 16
-        allowed = {"TOP_CORNER", "RIGHT_CORNER", "BOTTOM_CORNER", "LEFT_CORNER"}
+        allowed = {"TOP_RIGHT_CORNER", "BOTTOM_RIGHT_CORNER", "BOTTOM_LEFT_CORNER", "TOP_LEFT_CORNER"}
         for bits in table.values():
             assert set(bits) <= allowed
+
+    def test_corners_table_yields_16_distinct_signatures(self):
+        table = procgen.blob16_corners_table()
+        signatures = {frozenset(bits) for bits in table.values()}
+        assert len(signatures) == 16
+
+    def test_corners_empty_and_full(self):
+        table = procgen.blob16_corners_table(width=4)
+        assert table[(0, 0)] == []  # mask 0
+        assert set(table[(3, 3)]) == {
+            "TOP_RIGHT_CORNER", "BOTTOM_RIGHT_CORNER", "BOTTOM_LEFT_CORNER", "TOP_LEFT_CORNER",
+        }  # mask 15
 
     def test_sides_empty_and_full(self):
         table = procgen.blob16_sides_table(width=4)

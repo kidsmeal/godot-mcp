@@ -101,6 +101,35 @@ tiles = [
         p.write_text(cfg, encoding="utf-8")
         return str(p)
 
+    def _corners_complete_config(self, tmp_path: Path, texture_res: str) -> str:
+        """strategy='blob16_corners' covering all 16 MATCH_CORNERS classes —
+        the regression the P3 S1 spike surfaced: this strategy used to emit
+        the axis-aligned CORNER bits (hex/iso-only), which
+        `is_valid_terrain_peering_bit` rejects on a square grid, so the built
+        tileset audited as all-isolated (0/16 covered). Uses the real
+        strategy path (not 'explicit') so a regression here is caught again."""
+        cfg = f"""
+[tileset]
+tile_size = [8, 8]
+
+[[atlas]]
+id = "ground"
+texture = "{texture_res}"
+scan = "all"
+
+[[terrain_set]]
+mode = "match_corners"
+terrains = [ {{ name = "grass", color = "#4c8f3c" }} ]
+
+[[terrain_assign]]
+atlas = "ground"
+strategy = "blob16_corners"
+terrain = "grass"
+"""
+        p = tmp_path / "corners_complete.toml"
+        p.write_text(cfg, encoding="utf-8")
+        return str(p)
+
     def _incomplete_config(self, tmp_path: Path, texture_res: str) -> str:
         """Explicit strategy covering only 3 of the 16 MATCH_SIDES classes —
         a deliberately incomplete fixture the audit must catch as `missing`."""
@@ -175,6 +204,29 @@ tiles = [
         p = tmp_path / "two_sets.toml"
         p.write_text(cfg, encoding="utf-8")
         return str(p)
+
+    def test_blob16_corners_strategy_audits_clean(self, tmp_project, tmp_path, monkeypatch):
+        """Regression test for the P3 S1 carry-in bug: strategy='blob16_corners'
+        must build a tileset carrying the DIAGONAL corner bits, so the audit
+        reports full 16/16 coverage — not 0/16 (all-isolated), which is what
+        the axis-aligned-bit bug produced."""
+        texture_res = self._make_fixture_atlas(tmp_project, monkeypatch)
+        cfg_path = self._corners_complete_config(tmp_path, texture_res)
+        build_result = procgen.tileset_build(cfg_path, "res://tilesets/corners_complete.tres")
+        assert build_result.startswith("OK"), build_result
+
+        audit_result = procgen.terrain_audit("res://tilesets/corners_complete.tres")
+        assert "CLEAN" in audit_result, audit_result
+        assert "ERROR" not in audit_result.split("\n")[0], audit_result
+        assert "| 0 | grass | MATCH_CORNERS | 16 | 16 | 0 | 0 |" in audit_result, audit_result
+
+        fenced = audit_result.split("```json", 1)[1].split("```", 1)[0]
+        coverage = json.loads(fenced)
+        cov = coverage["0"]
+        assert cov["mode"] == "MATCH_CORNERS"
+        assert cov["expected_count"] == 16
+        assert cov["covered_count"] == 16
+        assert cov["missing"] == []
 
     def test_clean_tileset_audits_clean(self, tmp_project, tmp_path, monkeypatch):
         texture_res = self._make_fixture_atlas(tmp_project, monkeypatch)
