@@ -21,6 +21,10 @@ Exit criteria: module registered, a trivial headless round-trip (GDScript prints
 
 ## Phase 1: `tileset_build`
 
+**Carry-in from the Phase 0 review (2026-07-03) — harden the harness here, the first tool with a large real-data payload:**
+- **Sentinel-collision:** the P0 probe parses JSON between literal `PROCGEN_JSON_BEGIN`/`PROCGEN_JSON_END` markers with a non-greedy regex. That truncates early if a payload's JSON ever *contains* the literal end-marker (plausible once tools dump arbitrary project data — file paths, config values, atlas names). Before copying the pattern, switch to a collision-resistant sentinel (a per-run random nonce appended to the marker) or length-frame / base64 the JSON. Do this in P1 so all 6 tools inherit the hardened version.
+- **Docstring accuracy:** `procgen.py`'s docstring says the payload is printed "on ONE line," but the parser already tolerates multi-line (`re.S`). When P1 copies the pattern, relax that wording to "single- or multi-line between the sentinels" so a copier doesn't needlessly cram output. Doc-only.
+
 `tileset_build(config_path: str, out_path: str) -> report` where config is a TOML/JSON file in the game repo describing one TileSet:
 
 ```toml
