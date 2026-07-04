@@ -94,6 +94,23 @@ def _norm(text: str | None) -> str:
     return re.sub(r"\s+", " ", _strip_bbcode(text)).strip() if text else ""
 
 
+_SENTENCE_END = re.compile(r"\.(?:\s|$)")
+
+
+def first_sentence(text: str) -> str:
+    """Return ``text`` up to and including the first sentence terminator.
+
+    ``text`` is assumed already ``_norm``'d (single-line, whitespace-collapsed
+    prose). No terminator found -> return the whole string unchanged. This is
+    a simple split, not a real sentence tokenizer: over-splitting on an
+    abbreviation (e.g. "e.g.") is an accepted edge case, not a bug to fix here.
+    """
+    m = _SENTENCE_END.search(text)
+    if not m:
+        return text
+    return text[: m.start() + 1].strip()
+
+
 def _fetch_xml(name: str) -> str | None:
     global _network_down
 

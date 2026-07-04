@@ -119,6 +119,15 @@ def _trunc(s: str, n: int) -> str:
     return s if len(s) <= n else s[:n].rstrip() + "…"
 
 
+def _desc(text: str, n: int, full_docs: bool) -> str:
+    """Render a doc description: first sentence by default, full (char-capped)
+    text when ``full_docs`` is True. The existing char-budget cap (C22) always
+    applies on top via ``_trunc`` — first-sentence just changes what goes in."""
+    if not full_docs:
+        text = docs.first_sentence(text)
+    return _trunc(text, n)
+
+
 def _method_return(m: dict[str, Any]) -> str:
     rv = m.get("return_value")
     if isinstance(rv, dict):
@@ -180,7 +189,7 @@ def _format_property(p: dict[str, Any]) -> str:
     return f'{base} (get {getter}, set {setter})'
 
 
-def get_class(name: str, include_inherited: bool = False) -> str:
+def get_class(name: str, include_inherited: bool = False, full_docs: bool = False) -> str:
     idx = _load()
     if idx.get("_missing"):
         return _missing_msg()
@@ -234,7 +243,7 @@ def get_class(name: str, include_inherited: bool = False) -> str:
 
     dd = docs.class_docs(real)
     if dd and (dd["brief"] or dd["desc"]):
-        lines.append("  " + _trunc(dd["brief"] or dd["desc"], 260))
+        lines.append("  " + _desc(dd["brief"] or dd["desc"], 260, full_docs))
 
     props = c.get("properties") or c.get("members") or []
     if props:
@@ -242,7 +251,7 @@ def get_class(name: str, include_inherited: bool = False) -> str:
         for p in props:
             line = f'  {p["name"]}: {_pretty_type(p.get("type"))}'
             if dd and dd["members"].get(p["name"]):
-                line += "  — " + _trunc(dd["members"][p["name"]], 90)
+                line += "  — " + _desc(dd["members"][p["name"]], 90, full_docs)
             lines.append(line)
 
     methods = c.get("methods") or []
@@ -251,7 +260,7 @@ def get_class(name: str, include_inherited: bool = False) -> str:
         for m in methods:
             line = "  " + _format_method(m)
             if dd and dd["methods"].get(m["name"]):
-                line += "   — " + _trunc(dd["methods"][m["name"]], 90)
+                line += "   — " + _desc(dd["methods"][m["name"]], 90, full_docs)
             lines.append(line)
 
     signals = c.get("signals") or []
@@ -261,7 +270,7 @@ def get_class(name: str, include_inherited: bool = False) -> str:
             a = ", ".join(f'{x["name"]}: {_pretty_type(x.get("type"))}' for x in s.get("arguments", []))
             line = f'  signal {s["name"]}({a})'
             if dd and dd["signals"].get(s["name"]):
-                line += "   — " + _trunc(dd["signals"][s["name"]], 90)
+                line += "   — " + _desc(dd["signals"][s["name"]], 90, full_docs)
             lines.append(line)
 
     enums = c.get("enums") or []
@@ -294,7 +303,7 @@ def get_class(name: str, include_inherited: bool = False) -> str:
                     own_names.add(m["name"])
                     line = f'  {_format_method(m)}   [from {origin}]'
                     if add and add["methods"].get(m["name"]):
-                        line += "   — " + _trunc(add["methods"][m["name"]], 80)
+                        line += "   — " + _desc(add["methods"][m["name"]], 80, full_docs)
                     inh_lines.append(line)
             for p in arec.get("properties") or []:
                 if p["name"] not in own_names:
@@ -351,7 +360,7 @@ def _scan_record_for_member(c: dict[str, Any], ml: str) -> list[str]:
     return hits
 
 
-def get_member(class_name: str, member: str) -> str:
+def get_member(class_name: str, member: str, full_docs: bool = False) -> str:
     idx = _load()
     if idx.get("_missing"):
         return _missing_msg()
@@ -391,7 +400,7 @@ def get_member(class_name: str, member: str) -> str:
         for bucket in ("methods", "members", "signals", "constants"):
             desc = next((v for k, v in dd[bucket].items() if k.lower() == ml and v), "")
             if desc:
-                result += "\n\n" + _trunc(desc, 700)
+                result += "\n\n" + _desc(desc, 700, full_docs)
                 break
     return result
 

@@ -70,20 +70,24 @@ def godot_doctor() -> str:
 
 
 @mcp.tool()
-def godot_class(name: str, include_inherited: bool = False) -> str:
+def godot_class(name: str, include_inherited: bool = False, full_docs: bool = False) -> str:
     """Exact API for a Godot engine class at the project's pinned version:
     inheritance, methods (full signatures), properties, signals, enums, constants.
     Consult this BEFORE calling any engine API to avoid hallucinated/renamed members.
     Set include_inherited=True to also list members inherited from ancestor classes,
-    each labeled with their origin class (e.g. add_child from Node)."""
-    return engine_api.get_class(name, include_inherited)
+    each labeled with their origin class (e.g. add_child from Node).
+    Doc descriptions are compact by default (first sentence only); set
+    full_docs=True for the fuller (still char-capped) description text."""
+    return engine_api.get_class(name, include_inherited, full_docs)
 
 
 @mcp.tool()
-def godot_member(class_name: str, member: str) -> str:
+def godot_member(class_name: str, member: str, full_docs: bool = False) -> str:
     """Exact signature of a single method, property, signal, enum, or constant on a
-    Godot class. Use to confirm argument order/types before writing a call."""
-    return engine_api.get_member(class_name, member)
+    Godot class. Use to confirm argument order/types before writing a call.
+    Doc descriptions are compact by default (first sentence only); set
+    full_docs=True for the fuller (still char-capped) description text."""
+    return engine_api.get_member(class_name, member, full_docs)
 
 
 @mcp.tool()

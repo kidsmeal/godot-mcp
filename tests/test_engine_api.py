@@ -23,7 +23,7 @@ from typing import Any
 
 import pytest
 
-from godot_mcp import config, engine_api
+from godot_mcp import config, docs, engine_api
 
 # Path to the Phase-4 fixture dump (checked in, never touches capsulecastle)
 _FIXTURE_DUMP = pathlib.Path(__file__).parent / "fixtures" / "extension_api_phase4.json"
@@ -797,4 +797,133 @@ class TestC22JsonDecodeError:
         result = engine_api.search("lerp")
         assert "dump_api" in result.lower() or "re-run" in result.lower(), (
             f"Expected 're-run dump_api' message, got: {result}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Phase 6.6 Phase 3 — doc-description first-sentence default + full_docs=True
+# ---------------------------------------------------------------------------
+
+# A deliberately multi-sentence member description, long enough that the
+# fuller (char-capped) rendering is strictly longer than just its first
+# sentence, proving the two modes actually differ. The second sentence starts
+# well within get_class's 90-char property-line cap so "Also supports" is a
+# safe marker there; "AtlasTexture" (further in) is used only against
+# get_member's much larger 700-char cap.
+_MULTI_SENTENCE_DESC = (
+    "This texture is displayed on the sprite. Also supports any Texture2D "
+    "resource, including AtlasTexture and AnimatedTexture. Changing it at "
+    "runtime updates the sprite's visual immediately."
+)
+
+_CANNED_CLASS_DOCS = {
+    "brief": "",
+    "desc": "",
+    "methods": {},
+    "members": {"texture": _MULTI_SENTENCE_DESC},
+    "signals": {},
+    "constants": {},
+}
+
+
+@pytest.fixture()
+def canned_docs(monkeypatch):
+    """Monkeypatch docs.class_docs to return a canned multi-sentence description
+    for Sprite2D.texture, regardless of GODOT_MCP_DOCS (offline, no network/file I/O).
+    """
+    monkeypatch.setattr(
+        engine_api.docs, "class_docs", lambda name: _CANNED_CLASS_DOCS if name == "Sprite2D" else None
+    )
+
+
+class TestFullDocsParam:
+    """C22 note: the per-member char budget (_trunc) is untouched — first-sentence
+    is applied to the description text BEFORE the same _trunc call runs on top."""
+
+    def test_get_member_default_is_first_sentence(self, synthetic, canned_docs):
+        result = engine_api.get_member("Sprite2D", "texture")
+        assert "This texture is displayed on the sprite." in result
+        # Must NOT include the second sentence
+        assert "AtlasTexture" not in result
+
+    def test_get_member_full_docs_true_is_fuller(self, synthetic, canned_docs):
+        result = engine_api.get_member("Sprite2D", "texture", full_docs=True)
+        assert "AtlasTexture" in result
+        assert "immediately" in result
+
+    def test_get_member_full_docs_strictly_longer(self, synthetic, canned_docs):
+        """Real length difference: first-sentence default must be strictly
+        shorter than the full_docs=True rendering for a multi-sentence desc."""
+        compact = engine_api.get_member("Sprite2D", "texture")
+        full = engine_api.get_member("Sprite2D", "texture", full_docs=True)
+        assert len(compact) < len(full), f"compact={len(compact)} full={len(full)}"
+
+    def test_get_class_default_is_first_sentence(self, synthetic, canned_docs):
+        result = engine_api.get_class("Sprite2D")
+        assert "This texture is displayed on the sprite." in result
+        assert "Also supports" not in result
+
+    def test_get_class_full_docs_true_is_fuller(self, synthetic, canned_docs):
+        result = engine_api.get_class("Sprite2D", full_docs=True)
+        assert "Also supports" in result
+
+    def test_get_class_full_docs_strictly_longer(self, synthetic, canned_docs):
+        compact = engine_api.get_class("Sprite2D")
+        full = engine_api.get_class("Sprite2D", full_docs=True)
+        assert len(compact) < len(full), f"compact={len(compact)} full={len(full)}"
+
+    def test_server_godot_class_accepts_full_docs(self, synthetic, canned_docs):
+        from godot_mcp.server import godot_class
+        compact = godot_class("Sprite2D")
+        full = godot_class("Sprite2D", full_docs=True)
+        assert "Also supports" not in compact
+        assert "Also supports" in full
+
+    def test_server_godot_member_accepts_full_docs(self, synthetic, canned_docs):
+        from godot_mcp.server import godot_member
+        compact = godot_member("Sprite2D", "texture")
+        full = godot_member("Sprite2D", "texture", full_docs=True)
+        assert "AtlasTexture" not in compact
+        assert "AtlasTexture" in full
+
+
+class TestFirstSentenceHelper:
+    """docs.first_sentence edge cases (kept simple, no overengineering)."""
+
+    def test_no_terminator_returns_whole_string(self):
+        assert docs.first_sentence("no terminator here") == "no terminator here"
+
+    def test_splits_at_first_period_space(self):
+        assert docs.first_sentence("First sentence. Second sentence.") == "First sentence."
+
+    def test_empty_string(self):
+        assert docs.first_sentence("") == ""
+
+    def test_period_at_end_of_string_no_trailing_space(self):
+        assert docs.first_sentence("Only one sentence.") == "Only one sentence."
+
+    def test_abbreviation_over_split_is_acceptable(self):
+        """Over-splitting on an abbreviation like 'e.g.' is an accepted edge
+        case per the plan — not something this helper needs to handle."""
+        result = docs.first_sentence("Uses e.g. Node2D for positioning.")
+        assert result.startswith("Uses e.g.")
+
+
+class TestC22RegressionAfterFirstSentence:
+    """C22 (char budget + drill-down tail) must be unaffected by the
+    first-sentence change — re-run the budget/tail behavior explicitly here."""
+
+    def test_large_class_still_capped_with_tail(self, fixture_dump, monkeypatch):
+        monkeypatch.setattr(engine_api, "_CLASS_CHAR_BUDGET", 100)
+        result = engine_api.get_class("BigClass")
+        assert "godot_member" in result, (
+            f"Expected drill-down tail with 'godot_member', got:\n{result[-300:]}"
+        )
+
+    def test_large_class_still_capped_with_tail_full_docs(self, fixture_dump, monkeypatch):
+        """The budget/tail must also apply when full_docs=True."""
+        monkeypatch.setattr(engine_api, "_CLASS_CHAR_BUDGET", 100)
+        result = engine_api.get_class("BigClass", full_docs=True)
+        assert "godot_member" in result, (
+            f"Expected drill-down tail with 'godot_member', got:\n{result[-300:]}"
         )
