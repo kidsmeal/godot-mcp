@@ -262,13 +262,32 @@ def _require(cond: bool, msg: str) -> None:
         raise ConfigError(msg)
 
 
+def _is_int_pair(v: object) -> bool:
+    return isinstance(v, list) and len(v) == 2 and all(isinstance(n, int) for n in v)
+
+
+def _base_region_cells(base_region: list) -> set[tuple[int, int]]:
+    """Expand a validated `base_region` ([[x0,y0],[x1,y1]] inclusive rect) into
+    the set of (x, y) base-tile coords it covers. Callers must validate the
+    shape first (`validate_config` does, via the required-animation-fields
+    check) — this assumes a well-formed pair of int pairs.
+    """
+    corner0, corner1 = base_region[0], base_region[1]
+    bx0, by0 = int(corner0[0]), int(corner0[1])
+    bx1, by1 = int(corner1[0]), int(corner1[1])
+    return {(bx, by) for by in range(by0, by1 + 1) for bx in range(bx0, bx1 + 1)}
+
+
 def validate_config(cfg: dict) -> dict:
     """Validate a tileset_build config dict and return a normalized copy.
 
     Enforces (per the water-bottom law): at most one terrain per terrain set,
-    and `mode == "default"` for any animation group whose atlas carries a
-    terrain (water-bearing edges must start in phase). Raises ConfigError on
-    the first violation.
+    and `mode == "default"` for any animation group whose OWN base cells
+    overlap terrain-assigned cells (water-bearing edges must start in phase) —
+    a decor animation on non-terrain cells may use `random_start` even when the
+    same atlas also carries terrain-bearing tiles elsewhere. Also validates each
+    animation group's required fields (base_region shape, frames, frame_offset,
+    duration). Raises ConfigError on the first violation.
     """
     _require(isinstance(cfg.get("tileset"), dict), "config missing [tileset] section")
     tile_size = cfg["tileset"].get("tile_size")
@@ -323,27 +342,78 @@ def validate_config(cfg: dict) -> dict:
         if strat == "explicit":
             _require(isinstance(asn.get("tiles"), list) and asn["tiles"], "terrain_assign strategy='explicit' needs a per-tile bits list")
 
-    # Animation groups: atlas resolves; water-bearing groups (atlas carries a
-    # terrain) must be mode='default' so coastline water stays in phase.
-    terrained_atlases = {asn.get("atlas") for asn in (cfg.get("terrain_assign") or [])}
+    # Animation groups: atlas resolves; water-bearing groups (the animated
+    # TILE ITSELF carries a terrain) must be mode='default' so coastline water
+    # stays in phase. This is a TILE-level rule, not an atlas-level one: a
+    # decor tile with no terrain may use 'random_start' even in an atlas that
+    # also has terrain-bearing tiles elsewhere (mixed ground+decor sheets are
+    # common). Resolve each terrain_assign's per-cell coords once so every
+    # animation group's base-cell footprint can be checked against them.
+    terrain_cells_by_atlas: dict[str, set[tuple[int, int]]] = {}
+    for asn in cfg.get("terrain_assign") or []:
+        aid = asn.get("atlas")
+        if aid not in atlas_ids:
+            continue
+        origin = tuple(asn.get("origin", [0, 0]))
+        try:
+            bits_by_coords = _resolve_assign_bits(asn, origin)  # type: ignore[arg-type]
+        except (KeyError, TypeError):
+            # Malformed explicit tile entries etc. are reported by the
+            # terrain_assign loop above; skip here rather than double-report.
+            continue
+        terrain_cells_by_atlas.setdefault(aid, set()).update(bits_by_coords.keys())
+
     for an in cfg.get("animation") or []:
-        _require(an.get("atlas") in atlas_ids, f"animation references unknown atlas {an.get('atlas')!r}")
-        _require(isinstance(an.get("frames"), int) and an["frames"] >= 2, "animation group needs frames >= 2")
+        aid = an.get("atlas")
+        _require(aid in atlas_ids, f"animation references unknown atlas {aid!r}")
+
+        # Required animation-group fields, validated here (as ConfigError)
+        # BEFORE any compose-time indexing touches them — a malformed/missing
+        # field must come back as a structured report, never a raw Python
+        # stack trace (mcp cross-cutting discipline).
+        base_region = an.get("base_region")
+        _require(
+            isinstance(base_region, list) and len(base_region) == 2 and all(_is_int_pair(c) for c in base_region),
+            f"animation on atlas {aid!r}: base_region must be [[x0,y0],[x1,y1]] (int tile-coord pairs), got {base_region!r}",
+        )
+        assert isinstance(base_region, list)
+        bx0, by0 = int(base_region[0][0]), int(base_region[0][1])
+        bx1, by1 = int(base_region[1][0]), int(base_region[1][1])
+        _require(
+            bx0 <= bx1 and by0 <= by1,
+            f"animation on atlas {aid!r}: base_region [[x0,y0],[x1,y1]] must have x0<=x1 and y0<=y1, got {base_region!r}",
+        )
+        _require(isinstance(an.get("frames"), int) and an["frames"] >= 2, f"animation on atlas {aid!r}: needs an int frames >= 2")
+        fo = an.get("frame_offset", [1, 0])
+        _require(
+            _is_int_pair(fo),
+            f"animation on atlas {aid!r}: frame_offset must be an [int, int] pair, got {fo!r}",
+        )
+        duration = an.get("duration", 1.0)
+        _require(
+            isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration > 0,
+            f"animation on atlas {aid!r}: duration must be a positive number, got {duration!r}",
+        )
+
         mode = an.get("mode", "default")
         _require(mode in ("default", "random_start"), f"animation mode must be 'default' or 'random_start' (got {mode!r})")
         # Godot tile animation only supports contiguous horizontal or vertical
         # frame strips (see compose_build_script). Reject other offsets early.
-        fo = an.get("frame_offset", [1, 0])
         _require(
             (fo == [1, 0]) or (fo == [0, 1]),
-            f"animation on atlas {an['atlas']!r}: frame_offset must be [1,0] (horizontal) or [0,1] (vertical); got {fo}",
+            f"animation on atlas {aid!r}: frame_offset must be [1,0] (horizontal) or [0,1] (vertical); got {fo}",
         )
-        if an["atlas"] in terrained_atlases and mode != "default":
-            raise ConfigError(
-                f"animation on atlas {an['atlas']!r} carries a terrain but uses mode={mode!r}; "
-                "water-bearing (terrain) tiles MUST use mode='default' so the engine starts all "
-                "water animations in phase (coastline sync contract)"
-            )
+        if mode != "default":
+            terrain_cells = terrain_cells_by_atlas.get(aid, set())
+            overlap = _base_region_cells(base_region) & terrain_cells
+            if overlap:
+                sample = ", ".join(str(c) for c in sorted(overlap)[:5])
+                raise ConfigError(
+                    f"animation on atlas {aid!r} covers terrain-assigned tile(s) ({sample}) but uses "
+                    f"mode={mode!r}; water-bearing (terrain) tiles MUST use mode='default' so the engine starts "
+                    "all water animations in phase (coastline sync contract) — a decor tile with no terrain on "
+                    "the same atlas may still use 'random_start'"
+                )
 
     # Custom data layers: known types.
     for cd in (cfg.get("custom_data") or {}).get("layers") or []:
@@ -353,15 +423,37 @@ def validate_config(cfg: dict) -> dict:
 
 
 def load_config(config_path: str) -> dict:
-    """Read + validate a tileset_build config (TOML). Raises ConfigError."""
+    """Read + validate a tileset_build config (TOML or JSON). Raises ConfigError.
+
+    Dispatches on the file extension: `.json` parses via `json.loads`, anything
+    else (including `.toml`) parses via `tomllib.loads` (the historical
+    default, kept so extension-less paths still work). Both branches produce
+    the same plain dict shape, which then runs through the same
+    `validate_config` — the plan's config schema (`tileset_build`'s "TOML/JSON
+    file") does not vary by format, only by syntax.
+    """
     try:
         raw = Path(config_path).read_bytes()
     except OSError as e:
         raise ConfigError(f"could not read config {config_path}: {e}") from e
     try:
-        cfg = tomllib.loads(raw.decode("utf-8"))
-    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
-        raise ConfigError(f"config {config_path} is not valid TOML: {e}") from e
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError as e:
+        raise ConfigError(f"config {config_path} is not valid UTF-8: {e}") from e
+
+    if Path(config_path).suffix.lower() == ".json":
+        try:
+            cfg = json.loads(text)
+        except json.JSONDecodeError as e:
+            raise ConfigError(f"config {config_path} is not valid JSON: {e}") from e
+    else:
+        try:
+            cfg = tomllib.loads(text)
+        except tomllib.TOMLDecodeError as e:
+            raise ConfigError(f"config {config_path} is not valid TOML: {e}") from e
+
+    if not isinstance(cfg, dict):
+        raise ConfigError(f"config {config_path} must parse to an object/table at the top level")
     return validate_config(cfg)
 
 
@@ -593,8 +685,13 @@ func _build(warnings: Array) -> Dictionary:
 \t\tvar grid_w := 0
 \t\tvar grid_h := 0
 \t\tif img != null:
-\t\t\tgrid_w = int(floor(float(img.get_width() - src.margins.x) / float(tile_size.x + src.separation.x)))
-\t\t\tgrid_h = int(floor(float(img.get_height() - src.margins.y) / float(tile_size.y + src.separation.y)))
+\t\t\t# N tiles at `separation` apart span N*tile + (N-1)*separation pixels, so
+\t\t\t# adding one extra `separation` allowance before dividing accounts for
+\t\t\t# the fencepost the naive (image - margin) / (tile + separation) formula
+\t\t\t# drops on the FINAL tile (undercounts by one column/row whenever
+\t\t\t# separation is nonzero — P1-hardening finding #3).
+\t\t\tgrid_w = int(floor(float(img.get_width() - src.margins.x + src.separation.x) / float(tile_size.x + src.separation.x)))
+\t\t\tgrid_h = int(floor(float(img.get_height() - src.margins.y + src.separation.y) / float(tile_size.y + src.separation.y)))
 
 \t\t# 1) RESERVE animation frame regions FIRST — they consume grid space and
 \t\t#    must never be scanned/created as standalone tiles.
@@ -844,10 +941,12 @@ def _summarize(report: dict, out_path: str) -> str:
 
 
 def tileset_build(config_path: str, out_path: str, timeout: int = 180) -> str:
-    """Build a `.tres` TileSet from a declarative TOML config, headless.
+    """Build a `.tres` TileSet from a declarative TOML/JSON config, headless.
 
-    Validates the config in Python (water-bottom law: <=1 terrain per terrain
-    set; water-bearing animated tiles must be mode='default'), composes ONE
+    The config format is chosen by `config_path`'s extension (.json → JSON,
+    otherwise TOML); both parse to the same validated schema. Validates the
+    config in Python (water-bottom law: <=1 terrain per terrain
+    set; animated tiles whose cells carry a terrain must be mode='default'), composes ONE
     GDScript, parse-checks it, runs it via the shared headless probe, parses the
     nonce'd JSON report, and returns a human-readable summary. Never raises —
     config/build errors come back as structured report strings.

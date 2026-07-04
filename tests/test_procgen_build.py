@@ -226,3 +226,130 @@ terrains = [ { name = "grass" }, { name = "sand" } ]
         result = procgen.tileset_build(str(p), "res://tilesets/bad.tres")
         assert result.startswith("ERROR")
         assert "ONE terrain" in result
+
+    def test_json_config_builds_equivalent_tileset_to_toml(self, tmp_project, tmp_path, monkeypatch):
+        """P1-hardening finding #1: a .json config must build a tileset
+        end to end, headless, with the same reported tile/terrain/animation
+        counts as the equivalent .toml golden config."""
+        import json
+
+        texture_res = self._make_fixture_atlas(tmp_project, monkeypatch)
+        json_cfg = {
+            "tileset": {"tile_size": [8, 8]},
+            "atlas": [{"id": "ground", "texture": texture_res, "scan": "non_transparent"}],
+            "animation": [
+                {
+                    "atlas": "ground",
+                    "base_region": [[0, 1], [0, 1]],
+                    "frames": 2,
+                    "frame_offset": [1, 0],
+                    "duration": 0.6,
+                    "mode": "default",
+                }
+            ],
+            "terrain_set": [{"mode": "match_corners_and_sides", "terrains": [{"name": "grass", "color": "#4c8f3c"}]}],
+            "terrain_assign": [
+                {
+                    "atlas": "ground",
+                    "strategy": "explicit",
+                    "terrain": "grass",
+                    "tiles": [{"coords": [0, 0], "bits": ["TOP_SIDE", "LEFT_SIDE"]}],
+                }
+            ],
+            "physics": {"default_full_square": ["grass"]},
+            "custom_data": {"layers": [{"name": "biome_id", "type": "string"}]},
+        }
+        cfg_path = tmp_path / "plains.json"
+        cfg_path.write_text(json.dumps(json_cfg), encoding="utf-8")
+
+        result = procgen.tileset_build(str(cfg_path), "res://tilesets/plains_json.tres")
+        assert result.startswith("OK"), f"build did not succeed:\n{result}"
+        # Same expectations as the .toml golden-file build (test_build_reports_expected_and_reloads).
+        assert "tiles: 4" in result, result
+        assert "animated groups: 1" in result, result
+        assert "1 reserved frame regions" in result, result
+        assert "terrain sets: 1" in result, result
+        assert "peering bits: 2" in result, result
+        assert "skipped transparent: 3" in result, result
+        assert "reload check: 4 tiles" in result, result
+
+        tres = tmp_project / "tilesets" / "plains_json.tres"
+        assert tres.exists()
+
+
+@pytest.mark.skipif(not _godot_available, reason="Godot binary not resolvable on this machine")
+class TestTilesetBuildSeparatedAtlas:
+    """P1-hardening finding #3: a nonzero atlas `separation` must scan the
+    correct number of grid cells. The naive (image - margin) / (tile +
+    separation) formula drops the final tile/column whenever separation is
+    nonzero; the fixed grid-count math adds one `separation` allowance before
+    dividing.
+
+    Fixture atlas layout: 3 cols x 2 rows of 8x8 opaque tiles, margin (0,0),
+    separation (2,2) — sheet is 28x18px (3*8 + 2*2 = 28 wide, 2*8 + 1*2 = 18
+    tall). Every cell is opaque so scan='all' vs 'non_transparent' both see
+    the full 6-tile grid; the bug under test is the grid DIMENSION count, not
+    the alpha test."""
+
+    @pytest.fixture()
+    def tmp_project(self, tmp_path_factory, monkeypatch):
+        proj = tmp_path_factory.mktemp("procgen_sep_proj")
+        (proj / "project.godot").write_text(
+            'config_version=5\n\n[application]\nconfig/name="ProcgenSepFixture"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(config, "PROJECT_ROOT", proj)
+        return proj
+
+    _MAKE_SEPARATED_FIXTURE = r"""extends SceneTree
+func _initialize() -> void:
+	var w := 28
+	var h := 18
+	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	for gy in range(2):
+		for gx in range(3):
+			_fill_cell(img, gx, gy, Color(0.3, 0.6, 0.2, 1.0))
+	var err := img.save_png(OS.get_environment("PROCGEN_FIXTURE_OUT"))
+	print("FIXTURE_SAVE_RC=" + str(err))
+	quit(0)
+
+func _fill_cell(img: Image, gx: int, gy: int, col: Color) -> void:
+	var ox := gx * (8 + 2)
+	var oy := gy * (8 + 2)
+	for py in range(8):
+		for px in range(8):
+			img.set_pixel(ox + px, oy + py, col)
+"""
+
+    def _make_fixture_atlas(self, proj: Path, monkeypatch) -> str:
+        art = proj / "art"
+        art.mkdir(parents=True, exist_ok=True)
+        out_png = art / "separated.png"
+        monkeypatch.setenv("PROCGEN_FIXTURE_OUT", str(out_png))
+        r = runner.run_temp_probe(self._MAKE_SEPARATED_FIXTURE, timeout=60)
+        assert r.get("rc") == 0, f"fixture generation failed: {r}"
+        assert out_png.exists(), f"fixture PNG not written: {r.get('out')}"
+        return "res://art/separated.png"
+
+    def test_nonzero_separation_scans_correct_tile_count(self, tmp_project, tmp_path, monkeypatch):
+        texture_res = self._make_fixture_atlas(tmp_project, monkeypatch)
+        cfg = f"""
+[tileset]
+tile_size = [8, 8]
+
+[[atlas]]
+id = "ground"
+texture = "{texture_res}"
+separation = [2, 2]
+scan = "all"
+"""
+        p = tmp_path / "separated.toml"
+        p.write_text(cfg, encoding="utf-8")
+        result = procgen.tileset_build(str(p), "res://tilesets/separated.tres")
+        assert result.startswith("OK"), f"build did not succeed:\n{result}"
+        # 3 cols x 2 rows = 6 tiles. The pre-fix formula undercounts this to
+        # 2 cols x 1 row = 2 tiles (drops the final column/row whenever
+        # separation is nonzero).
+        assert "tiles: 6" in result, result
+        assert "reload check: 6 tiles" in result, result

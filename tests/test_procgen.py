@@ -145,6 +145,115 @@ def _min_cfg() -> dict:
     }
 
 
+class TestLoadConfigFormatDispatch:
+    """P1-hardening finding #1: config is a 'TOML/JSON file' per the plan, but
+    load_config previously only ever called tomllib. Dispatch on extension and
+    prove a .json config produces the SAME validated dict shape as the
+    equivalent .toml config."""
+
+    _TOML = """
+[tileset]
+tile_size = [8, 8]
+
+[[atlas]]
+id = "ground"
+texture = "res://art/ground.png"
+scan = "non_transparent"
+
+[[terrain_set]]
+mode = "match_corners_and_sides"
+terrains = [ { name = "grass", color = "#4c8f3c" } ]
+
+[[terrain_assign]]
+atlas = "ground"
+strategy = "blob47"
+terrain = "grass"
+
+[[animation]]
+atlas = "ground"
+base_region = [[0, 4], [0, 4]]
+frames = 2
+frame_offset = [1, 0]
+duration = 0.6
+mode = "default"
+
+[physics]
+default_full_square = ["grass"]
+
+[custom_data]
+layers = [ { name = "biome_id", type = "string" } ]
+"""
+
+    def _equivalent_json(self) -> dict:
+        return {
+            "tileset": {"tile_size": [8, 8]},
+            "atlas": [{"id": "ground", "texture": "res://art/ground.png", "scan": "non_transparent"}],
+            "terrain_set": [{"mode": "match_corners_and_sides", "terrains": [{"name": "grass", "color": "#4c8f3c"}]}],
+            "terrain_assign": [{"atlas": "ground", "strategy": "blob47", "terrain": "grass"}],
+            "animation": [
+                {
+                    "atlas": "ground",
+                    "base_region": [[0, 4], [0, 4]],
+                    "frames": 2,
+                    "frame_offset": [1, 0],
+                    "duration": 0.6,
+                    "mode": "default",
+                }
+            ],
+            "physics": {"default_full_square": ["grass"]},
+            "custom_data": {"layers": [{"name": "biome_id", "type": "string"}]},
+        }
+
+    def test_json_and_toml_configs_parse_and_validate_identically(self, tmp_path):
+        import json
+
+        toml_path = tmp_path / "plains.toml"
+        toml_path.write_text(self._TOML, encoding="utf-8")
+        json_path = tmp_path / "plains.json"
+        json_path.write_text(json.dumps(self._equivalent_json()), encoding="utf-8")
+
+        toml_cfg = procgen.load_config(str(toml_path))
+        json_cfg = procgen.load_config(str(json_path))
+        assert toml_cfg == json_cfg
+
+    def test_json_config_composes_the_same_build_script_as_toml(self, tmp_path):
+        """Beyond dict equality: the .json-loaded config must drive
+        compose_build_script identically to the .toml-loaded one (an
+        equivalent tileset), not just parse to the same shape."""
+        import json
+
+        toml_path = tmp_path / "plains.toml"
+        toml_path.write_text(self._TOML, encoding="utf-8")
+        json_path = tmp_path / "plains.json"
+        json_path.write_text(json.dumps(self._equivalent_json()), encoding="utf-8")
+
+        toml_cfg = procgen.load_config(str(toml_path))
+        json_cfg = procgen.load_config(str(json_path))
+        toml_src = procgen.compose_build_script(toml_cfg, "res://out/ts.tres", "samenonce")
+        json_src = procgen.compose_build_script(json_cfg, "res://out/ts.tres", "samenonce")
+        assert toml_src == json_src
+
+    def test_malformed_json_is_a_clean_config_error(self, tmp_path):
+        p = tmp_path / "broken.json"
+        p.write_text("{not valid json", encoding="utf-8")
+        with pytest.raises(procgen.ConfigError, match="not valid JSON"):
+            procgen.load_config(str(p))
+
+    def test_non_object_json_top_level_is_a_clean_config_error(self, tmp_path):
+        p = tmp_path / "list.json"
+        p.write_text("[1, 2, 3]", encoding="utf-8")
+        with pytest.raises(procgen.ConfigError, match="object/table"):
+            procgen.load_config(str(p))
+
+    def test_extensionless_path_still_parses_as_toml(self, tmp_path):
+        """Back-compat: a path with no recognized extension falls back to the
+        historical TOML behavior rather than silently failing."""
+        p = tmp_path / "plains_no_ext"
+        p.write_text(self._TOML, encoding="utf-8")
+        cfg = procgen.load_config(str(p))
+        assert cfg["tileset"]["tile_size"] == [8, 8]
+
+
 class TestConfigValidation:
     def test_minimal_config_valid(self):
         procgen.validate_config(_min_cfg())
@@ -214,6 +323,78 @@ class TestConfigValidation:
         cfg["atlas"][0]["scan"] = "explicit"
         with pytest.raises(procgen.ConfigError, match="explicit"):
             procgen.validate_config(cfg)
+
+    def test_mixed_atlas_decor_random_start_on_non_terrain_cells_validates(self):
+        """P1-hardening finding #2: the water-bearing rule is TILE-level, not
+        atlas-level. A single atlas may carry BOTH a terrain-assigned ground
+        tile (at (0,0)) AND a random_start decor animation whose base cell
+        (5,5) carries no terrain — this must VALIDATE cleanly."""
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_sides", "terrains": [{"name": "grass"}]}]
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "explicit",
+                "terrain": "grass",
+                "tiles": [{"coords": [0, 0], "bits": []}],
+            }
+        ]
+        cfg["animation"] = [
+            {"atlas": "ground", "base_region": [[5, 5], [5, 5]], "frames": 3, "mode": "random_start"}
+        ]
+        procgen.validate_config(cfg)  # must not raise
+
+    def test_random_start_on_a_terrain_bearing_tile_itself_still_errors(self):
+        """The same mixed atlas as above, but the animation's base cell IS the
+        terrain-assigned cell (0,0) — this must still ERROR, since the
+        animated tile itself carries a terrain (water-bearing edges must sync)."""
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_sides", "terrains": [{"name": "grass"}]}]
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "explicit",
+                "terrain": "grass",
+                "tiles": [{"coords": [0, 0], "bits": []}],
+            }
+        ]
+        cfg["animation"] = [
+            {"atlas": "ground", "base_region": [[0, 0], [0, 0]], "frames": 3, "mode": "random_start"}
+        ]
+        with pytest.raises(procgen.ConfigError, match="mode='default'"):
+            procgen.validate_config(cfg)
+
+    def test_missing_base_region_is_a_clean_config_error(self):
+        """P1-hardening finding #5: a malformed/missing base_region must come
+        back as a structured ConfigError from validate_config, never a raw
+        Python stack trace from compose-time indexing."""
+        cfg = _min_cfg()
+        cfg["animation"] = [{"atlas": "ground", "frames": 2}]  # no base_region at all
+        with pytest.raises(procgen.ConfigError, match="base_region"):
+            procgen.validate_config(cfg)
+
+    def test_malformed_base_region_is_a_clean_config_error(self):
+        cfg = _min_cfg()
+        cfg["animation"] = [{"atlas": "ground", "base_region": [[0, 0]], "frames": 2}]  # only one corner
+        with pytest.raises(procgen.ConfigError, match="base_region"):
+            procgen.validate_config(cfg)
+
+    def test_load_config_surfaces_missing_base_region_as_config_error_not_stack_trace(self, tmp_path):
+        """End-to-end through load_config (and therefore through
+        tileset_build's own try/except ConfigError path): a config with a
+        missing base_region must never reach compose_build_script's
+        unguarded `(bx0, by0), (bx1, by1) = an["base_region"]` unpack."""
+        import json as _json
+
+        cfg = {
+            "tileset": {"tile_size": [8, 8]},
+            "atlas": [{"id": "ground", "texture": "res://art/ground.png"}],
+            "animation": [{"atlas": "ground", "frames": 2}],
+        }
+        p = tmp_path / "bad_anim.json"
+        p.write_text(_json.dumps(cfg), encoding="utf-8")
+        with pytest.raises(procgen.ConfigError, match="base_region"):
+            procgen.load_config(str(p))
 
 
 # --- GDScript composition ---------------------------------------------------
