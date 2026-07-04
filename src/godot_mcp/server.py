@@ -267,35 +267,35 @@ def godot_validate(script_path: str, timeout: int = 60) -> str:
 
 # --- Live editor bridge (optional 'Godot Grounding Bridge' addon) -----------
 @mcp.tool()
-def godot_editor_ping() -> str:
+def editor_ping() -> str:
     """Check the live editor bridge: returns the running Godot editor version if the
     'Godot Grounding Bridge' addon is enabled and the editor is open, else how to fix it.
-    Call this before the other godot_editor/run tools."""
+    Call this before the other editor_* bridge tools."""
     return bridge.ping()
 
 
 @mcp.tool()
-def godot_run_game(scene: str = "main") -> str:
+def editor_run_game(scene: str = "main") -> str:
     """Play the project in the open Godot editor: scene='main' (the project main scene)
     or 'current' (the scene being edited). Requires the editor bridge addon."""
     return bridge.run_game(scene)
 
 
 @mcp.tool()
-def godot_stop_game() -> str:
+def editor_stop_game() -> str:
     """Stop the running game in the Godot editor (editor bridge addon required)."""
     return bridge.stop_game()
 
 
 @mcp.tool()
-def godot_editor_scene_tree() -> str:
+def editor_scene_tree() -> str:
     """Return the node tree of the scene currently open in the Godot editor (live, via the
     editor bridge addon)."""
     return bridge.scene_tree()
 
 
 @mcp.tool()
-def godot_open_scene(scene_path: str) -> str:
+def editor_open_scene(scene_path: str) -> str:
     """Open a scene (res:// path) in the Godot editor via the editor bridge addon."""
     try:
         resolved = config.resolve_project_path(scene_path)

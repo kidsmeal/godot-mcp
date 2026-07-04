@@ -165,12 +165,12 @@ class TestB5RunGameValidation:
         assert "current" in result.lower()
 
     def test_server_wrapper_validates(self, tmp_project, monkeypatch):
-        """server.godot_run_game also validates scene before calling bridge."""
+        """server.editor_run_game also validates scene before calling bridge."""
         from godot_mcp import bridge
         sent = []
         monkeypatch.setattr(bridge, "_send", lambda *a, **kw: sent.append(a) or {"ok": True, "playing": "main"})
-        from godot_mcp.server import godot_run_game
-        result = godot_run_game("notavalidscene")
+        from godot_mcp.server import editor_run_game
+        result = editor_run_game("notavalidscene")
         assert isinstance(result, str)
         # Either bridge rejects it (no _send call) or server rejects it
         # The point is a string comes back
@@ -183,25 +183,25 @@ class TestB5RunGameValidation:
 
 class TestB6OpenSceneExistenceCheck:
     def test_nonexistent_res_path_returns_not_found(self, tmp_project, monkeypatch):
-        """godot_open_scene: valid res:// path that doesn't exist → 'Not found' before bridge send."""
+        """editor_open_scene: valid res:// path that doesn't exist → 'Not found' before bridge send."""
         from godot_mcp import bridge
         sent = []
         monkeypatch.setattr(bridge, "_send", lambda *a, **kw: sent.append(a) or {"ok": True, "opened": "?"})
-        from godot_mcp.server import godot_open_scene
-        result = godot_open_scene("res://nonexistent_scene.tscn")
+        from godot_mcp.server import editor_open_scene
+        result = editor_open_scene("res://nonexistent_scene.tscn")
         assert isinstance(result, str)
         assert "Not found" in result or "not found" in result.lower()
         assert not sent, "bridge._send must NOT be called for a nonexistent path"
 
     def test_existing_path_calls_bridge(self, tmp_project, monkeypatch):
-        """godot_open_scene: path that exists gets forwarded to bridge."""
+        """editor_open_scene: path that exists gets forwarded to bridge."""
         scene = tmp_project / "exists.tscn"
         scene.write_text("[gd_scene format=3]\n", encoding="utf-8")
         from godot_mcp import bridge
         sent = []
         monkeypatch.setattr(bridge, "_send", lambda *a, **kw: sent.append(a) or {"ok": True, "opened": "res://exists.tscn"})
-        from godot_mcp.server import godot_open_scene
-        godot_open_scene("res://exists.tscn")
+        from godot_mcp.server import editor_open_scene
+        editor_open_scene("res://exists.tscn")
         assert sent, "bridge._send should be called for an existing path"
 
 

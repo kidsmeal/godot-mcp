@@ -337,7 +337,7 @@ class TestGodotFixScript:
 
 
 # ---------------------------------------------------------------------------
-# godot_open_scene  (server.py -> bridge.open_scene, F-3)
+# editor_open_scene  (server.py -> bridge.open_scene, F-3)
 # Must refuse BEFORE sending to the editor bridge.
 # ---------------------------------------------------------------------------
 
@@ -346,8 +346,8 @@ class TestGodotOpenScene:
         from godot_mcp import bridge
         sent = []
         monkeypatch.setattr(bridge, "_send", lambda cmd, **kw: sent.append(cmd) or {"ok": True, "opened": "?"})
-        from godot_mcp.server import godot_open_scene
-        result = godot_open_scene("../../evil.tscn")
+        from godot_mcp.server import editor_open_scene
+        result = editor_open_scene("../../evil.tscn")
         assert_refused(result, "dotdot")
         assert not sent, "bridge._send must NOT be called for an escaped path"
 
@@ -355,8 +355,8 @@ class TestGodotOpenScene:
         from godot_mcp import bridge
         sent = []
         monkeypatch.setattr(bridge, "_send", lambda cmd, **kw: sent.append(cmd) or {"ok": True, "opened": "?"})
-        from godot_mcp.server import godot_open_scene
-        result = godot_open_scene(str(outside_tscn))
+        from godot_mcp.server import editor_open_scene
+        result = editor_open_scene(str(outside_tscn))
         assert_refused(result, str(outside_tscn))
         assert not sent
 
@@ -369,7 +369,7 @@ class TestGodotOpenScene:
         from godot_mcp import bridge
         sent = []
         monkeypatch.setattr(bridge, "_send", lambda cmd, **kw: sent.append(cmd) or {"ok": True, "opened": "?"})
-        from godot_mcp.server import godot_open_scene
-        result = godot_open_scene("res://symlink_open.tscn")
+        from godot_mcp.server import editor_open_scene
+        result = editor_open_scene("res://symlink_open.tscn")
         assert_refused(result, "symlink")
         assert not sent

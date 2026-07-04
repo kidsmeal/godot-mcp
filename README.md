@@ -142,11 +142,11 @@ in **Project → Project Settings → Plugins**, keep the editor open, and these
 
 | Tool | Action |
 |---|---|
-| `godot_editor_ping` | Check the bridge connection / editor version |
-| `godot_run_game(scene)` | Play the `main` or `current` scene |
-| `godot_stop_game` | Stop the running scene |
-| `godot_editor_scene_tree` | Live node tree of the edited scene |
-| `godot_open_scene(path)` | Open a scene in the editor |
+| `editor_ping` | Check the bridge connection / editor version |
+| `editor_run_game(scene)` | Play the `main` or `current` scene |
+| `editor_stop_game` | Stop the running scene |
+| `editor_scene_tree` | Live node tree of the edited scene |
+| `editor_open_scene(path)` | Open a scene in the editor |
 
 The bridge listens on `127.0.0.1:9123`. To use a different port, set `GODOT_BRIDGE_PORT`
 for **both** the MCP server and the Godot editor (the addon reads it on startup) so the two
