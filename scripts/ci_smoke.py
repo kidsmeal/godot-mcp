@@ -65,6 +65,7 @@ EXPECTED_TOOLS = {
     "project_setting",
     "project_classes",
     "project_layers",
+    "procgen_ping",
 }
 
 names = {t.name for t in asyncio.run(mcp.list_tools())}

@@ -20,6 +20,7 @@ from godot_mcp import (
     edit,
     engine_api,
     lint,
+    procgen,
     project_ground,
     refs,
     runner,
@@ -321,6 +322,16 @@ def editor_open_scene(scene_path: str) -> str:
     if not resolved.exists():
         return f"Not found: {scene_path}"
     return bridge.open_scene(scene_path)
+
+
+# --- Procgen tool suite (Phase 0 harness) -----------------------------------
+@mcp.tool()
+def procgen_ping() -> str:
+    """Throwaway harness probe for the procgen tool suite: proves the headless
+    round-trip (compose GDScript -> run via the existing headless runner -> parse
+    JSON from stdout) works against the configured project/engine. Deleted once
+    the first real procgen_* tool lands — not for general use."""
+    return procgen.ping()
 
 
 def main() -> None:
