@@ -324,14 +324,21 @@ def editor_open_scene(scene_path: str) -> str:
     return bridge.open_scene(scene_path)
 
 
-# --- Procgen tool suite (Phase 0 harness) -----------------------------------
+# --- Procgen tool suite (procgen_*) -----------------------------------------
 @mcp.tool()
-def procgen_ping() -> str:
-    """Throwaway harness probe for the procgen tool suite: proves the headless
-    round-trip (compose GDScript -> run via the existing headless runner -> parse
-    JSON from stdout) works against the configured project/engine. Deleted once
-    the first real procgen_* tool lands — not for general use."""
-    return procgen.ping()
+def procgen_tileset_build(config_path: str, out_path: str) -> str:
+    """Build a `.tres` TileSet from a declarative TOML config, headless.
+
+    config_path is a filesystem path to the TOML config (atlas sources, terrain
+    sets + peering-bit strategy, tile-animation groups, physics/custom-data
+    layers). out_path is the project-relative res:// path to write the TileSet
+    to. Python validates the config (water-bottom law: at most one terrain per
+    terrain set; water-bearing animated tiles must be mode='default'), composes
+    and parse-checks one GDScript, runs it headless, and reports tiles created,
+    animated groups, reserved frame regions, peering bits assigned, and a reload
+    sanity check. The built-in terrain solver is never used (issues #76493 /
+    #89844); peering bits are assigned directly for the in-house matcher."""
+    return procgen.tileset_build(config_path, out_path)
 
 
 def main() -> None:

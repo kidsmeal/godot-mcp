@@ -1,10 +1,8 @@
-"""procgen: Phase 0 harness for the procgen tool suite (`procgen_*`).
+"""procgen: the procgen tool suite (`procgen_*`).
 
-This module is the reconnaissance/harness phase — it proves the round-trip
-mechanism the six real tools (`procgen_tileset_build`, `procgen_terrain_audit`,
-`procgen_worldgen_preview`, `procgen_island_preview`, `procgen_chunk_lint`,
-`procgen_gen_smoke`) will all copy. `ping()` is a throwaway probe; it is
-deleted once the first real tool (`procgen_tileset_build`, Phase 1) lands.
+Phase 0 stood up the headless round-trip harness (a throwaway `procgen_ping`
+probe, now removed). Phase 1 lands the first real tool, `tileset_build`, and
+hardens the shared harness the remaining five tools inherit.
 
 Temp-script pattern (decide-once, documented here so later phases copy it
 verbatim rather than re-inventing it):
@@ -22,72 +20,860 @@ verbatim rather than re-inventing it):
     across the whole server), and deletes the temp `.gd` (and any `.gd.uid`
     sibling Godot emits) in a `finally` block — no leak into the project or
     OS temp dir even on a crash. Do NOT hand-roll a second subprocess path.
-  - The composed script prints a JSON payload on ONE line, wrapped between
-    sentinel markers on their own lines:
+  - The composed script prints a JSON payload (single- or multi-line between
+    the sentinels — the parser tolerates both) wrapped between per-run sentinel
+    markers on their own lines:
 
-        print("PROCGEN_JSON_BEGIN")
+        print("PROCGEN_JSON_BEGIN:<nonce>")
         print(JSON.stringify({...}))
-        print("PROCGEN_JSON_END")
+        print("PROCGEN_JSON_END:<nonce>")
 
-    Python extracts the text strictly between the two sentinel lines with a
-    regex and `json.loads()`s it. This is a slightly stronger convention than
-    the single-prefix sentinel `project_ground.setting()` uses
-    (`__SETTING_VALUE__<value>`) — that one works for a single scalar; a JSON
-    payload can itself contain characters (braces, colons) that a naive
-    "everything after the marker" scan would need to hand this on the same
-    line, so a BEGIN/END pair around a dedicated print is more robust and is
-    the pattern the 6 real tools (which all print structured reports) should
-    copy.
+    The `<nonce>` is a fresh random hex token generated per run in Python and
+    interpolated into BOTH the composed script and the parser regex. This is
+    collision-resistant: a payload that happens to contain the literal string
+    "PROCGEN_JSON_END" (plausible once tools dump arbitrary project data — file
+    paths, config values, atlas names) can no longer truncate parsing early,
+    because it cannot also contain that run's random nonce. `make_sentinels()`
+    + `parse_sentinel_json()` below are the shared harness helpers; every
+    `procgen_*` tool composes its report through them.
   - `quit()` at the end of `_initialize()` so the SceneTree exits promptly.
 """
 from __future__ import annotations
 
 import json
-import re
+import secrets
+import tomllib
+from pathlib import Path
 
-from godot_mcp import runner
+from godot_mcp import config, runner
 
-_JSON_RE = re.compile(r"PROCGEN_JSON_BEGIN\s*(.*?)\s*PROCGEN_JSON_END", re.S)
+# ---------------------------------------------------------------------------
+# Hardened sentinel harness (shared by every procgen_* tool)
+# ---------------------------------------------------------------------------
 
-_PING_SCRIPT = (
-    "extends SceneTree\n"
-    "func _initialize() -> void:\n"
-    "\tvar payload := {\n"
-    '\t\t"engine_version": Engine.get_version_info().string,\n'
-    '\t\t"ok": true,\n'
-    "\t}\n"
-    '\tprint("PROCGEN_JSON_BEGIN")\n'
-    "\tprint(JSON.stringify(payload))\n"
-    '\tprint("PROCGEN_JSON_END")\n'
-    "\tquit(0)\n"
-)
+_SENTINEL_BEGIN = "PROCGEN_JSON_BEGIN"
+_SENTINEL_END = "PROCGEN_JSON_END"
 
 
-def ping() -> str:
-    """Throwaway harness probe: compose a tiny GDScript that prints the engine
-    version as JSON between sentinel lines, run it headlessly via the existing
-    runner.run_temp_probe machinery, parse the JSON back out, and return a short
-    human-readable string. Never raises — degrades to a graceful error string
-    if Godot is unavailable, the run times out, or the sentinel/JSON is missing
-    or malformed.
+def make_sentinels() -> tuple[str, str, str]:
+    """Return (nonce, begin_marker, end_marker) for one probe run.
+
+    The nonce is a fresh random hex token, appended to both markers so a JSON
+    payload can never contain the *exact* end marker for this run (see the
+    module docstring's collision note). Compose the GDScript's begin/end prints
+    with the returned markers and parse the output with `parse_sentinel_json`.
     """
-    r = runner.run_temp_probe(_PING_SCRIPT, timeout=30)
+    nonce = secrets.token_hex(8)
+    return nonce, f"{_SENTINEL_BEGIN}:{nonce}", f"{_SENTINEL_END}:{nonce}"
 
+
+def parse_sentinel_json(out: str, nonce: str) -> tuple[dict | None, str]:
+    """Extract and parse the JSON payload between this run's nonce'd sentinels.
+
+    Returns (payload, ""). On failure returns (None, reason) where reason is a
+    short human string. Splits on the exact nonce'd markers rather than a regex
+    over the bare marker, so an embedded literal "PROCGEN_JSON_END" cannot
+    truncate the block.
+    """
+    begin = f"{_SENTINEL_BEGIN}:{nonce}"
+    end = f"{_SENTINEL_END}:{nonce}"
+    if begin not in out:
+        return None, "no PROCGEN_JSON begin sentinel in output"
+    after = out.split(begin, 1)[1]
+    if end not in after:
+        return None, "no PROCGEN_JSON end sentinel in output"
+    body = after.split(end, 1)[0].strip()
+    try:
+        return json.loads(body), ""
+    except json.JSONDecodeError as e:
+        return None, f"malformed JSON between sentinels: {e}"
+
+
+# ---------------------------------------------------------------------------
+# blob autotile strategy tables (pure Python data — tested directly)
+# ---------------------------------------------------------------------------
+#
+# These map a standard blob-layout grid offset (col, row) to the set of terrain
+# peering bits a tile at that offset must carry, for the water-bottom law's
+# itself-vs-empty signatures. The engine's built-in terrain solver is NEVER
+# used to derive or apply these (issues #76493 diagonal/wrong-terrain and
+# #89844 ignored diagonal bits — both still open on 4.6.2 AND 4.7-stable as of
+# 2026-07-03; re-audit by grepping these numbers on any engine bump). We assign
+# peering bits directly to TileData and let the in-house matcher read them.
+
+# Godot TileSet.CellNeighbor bit names, by our compass shorthand.
+# Sides for MATCH_SIDES / MATCH_CORNERS_AND_SIDES:
+_SIDE_BITS = {"N": "TOP_SIDE", "E": "RIGHT_SIDE", "S": "BOTTOM_SIDE", "W": "LEFT_SIDE"}
+# Diagonal corners for MATCH_CORNERS_AND_SIDES:
+_CORNER_BITS = {
+    "NE": "TOP_RIGHT_CORNER",
+    "SE": "BOTTOM_RIGHT_CORNER",
+    "SW": "BOTTOM_LEFT_CORNER",
+    "NW": "TOP_LEFT_CORNER",
+}
+# The 4 side-of-corner bits for MATCH_CORNERS (corner-only mode uses the
+# axis-aligned CORNER bits, not the diagonal ones):
+_CORNER_ONLY_BITS = {
+    "N": "TOP_CORNER",
+    "E": "RIGHT_CORNER",
+    "S": "BOTTOM_CORNER",
+    "W": "LEFT_CORNER",
+}
+
+_SIDES = ("N", "E", "S", "W")
+_CORNERS = ("NE", "SE", "SW", "NW")
+# A diagonal corner is only "filled" if BOTH its adjacent sides are filled;
+# this is what collapses the 256 raw 8-neighbor cases to 47 canonical classes.
+_CORNER_ADJ = {"NE": ("N", "E"), "SE": ("S", "E"), "SW": ("S", "W"), "NW": ("N", "W")}
+
+
+def _canonical_blob47_configs() -> list[tuple[tuple[str, ...], tuple[str, ...]]]:
+    """The 47 canonical (sides, corners) neighbor classes for
+    MATCH_CORNERS_AND_SIDES, in a deterministic order.
+
+    Enumerated from the corner-validity rule (a corner counts only when both
+    adjacent sides are filled), which yields exactly 47 classes. Ordering is
+    stable: fewer sides first, then side-index order, then fewer corners, then
+    corner-index order. Config 0 is the isolated tile (no neighbors); config 46
+    is the full-interior tile (all 8 neighbors).
+    """
+    side_idx = {s: i for i, s in enumerate(_SIDES)}
+    corner_idx = {c: i for i, c in enumerate(_CORNERS)}
+    configs: list[tuple[tuple[str, ...], tuple[str, ...]]] = []
+    for smask in range(16):
+        sides = tuple(_SIDES[i] for i in range(4) if smask & (1 << i))
+        sset = set(sides)
+        eligible = [c for c in _CORNERS if _CORNER_ADJ[c][0] in sset and _CORNER_ADJ[c][1] in sset]
+        for cmask in range(1 << len(eligible)):
+            corners = tuple(eligible[i] for i in range(len(eligible)) if cmask & (1 << i))
+            configs.append((sides, corners))
+
+    def _key(cfg: tuple[tuple[str, ...], tuple[str, ...]]) -> tuple:
+        s, c = cfg
+        return (len(s), tuple(sorted(side_idx[x] for x in s)), len(c), tuple(sorted(corner_idx[x] for x in c)))
+
+    configs.sort(key=_key)
+    return configs
+
+
+def blob47_table(width: int = 8) -> dict[tuple[int, int], list[str]]:
+    """Map grid offset (col, row) -> list of CellNeighbor bit names for a
+    standard 47-tile blob layout under MATCH_CORNERS_AND_SIDES.
+
+    The 47 canonical classes are laid out row-major at *width* columns (the
+    common blob-sheet arrangement). Offsets are relative to the config's
+    `origin`. Bit names are the engine's `TileSet.CellNeighbor` enum member
+    names (e.g. "TOP_SIDE", "BOTTOM_RIGHT_CORNER").
+    """
+    table: dict[tuple[int, int], list[str]] = {}
+    for i, (sides, corners) in enumerate(_canonical_blob47_configs()):
+        col, row = i % width, i // width
+        bits = [_SIDE_BITS[s] for s in sides] + [_CORNER_BITS[c] for c in corners]
+        table[(col, row)] = bits
+    return table
+
+
+def blob16_sides_table(width: int = 4) -> dict[tuple[int, int], list[str]]:
+    """Map grid offset -> side-bit names for a 16-tile blob under MATCH_SIDES.
+
+    All 16 side masks are valid (no corners), laid out row-major at *width*.
+    """
+    table: dict[tuple[int, int], list[str]] = {}
+    for smask in range(16):
+        sides = [_SIDES[i] for i in range(4) if smask & (1 << i)]
+        col, row = smask % width, smask // width
+        table[(col, row)] = [_SIDE_BITS[s] for s in sides]
+    return table
+
+
+def blob16_corners_table(width: int = 4) -> dict[tuple[int, int], list[str]]:
+    """Map grid offset -> corner-bit names for a 16-tile blob under
+    MATCH_CORNERS.
+
+    Corner-only mode uses the axis-aligned CORNER peering bits (TOP_CORNER,
+    RIGHT_CORNER, BOTTOM_CORNER, LEFT_CORNER), one per side direction. All 16
+    masks are valid, laid out row-major at *width*.
+    """
+    table: dict[tuple[int, int], list[str]] = {}
+    for cmask in range(16):
+        corners = [_SIDES[i] for i in range(4) if cmask & (1 << i)]
+        col, row = cmask % width, cmask // width
+        table[(col, row)] = [_CORNER_ONLY_BITS[c] for c in corners]
+    return table
+
+
+_STRATEGY_TABLES = {
+    "blob47": blob47_table,
+    "blob16_sides": blob16_sides_table,
+    "blob16_corners": blob16_corners_table,
+}
+
+
+# ---------------------------------------------------------------------------
+# Config validation
+# ---------------------------------------------------------------------------
+
+
+class ConfigError(ValueError):
+    """A tileset_build config failed validation (reported, not raised to user)."""
+
+
+_VARIANT_TYPES = {"string": "TYPE_STRING", "int": "TYPE_INT", "float": "TYPE_FLOAT", "bool": "TYPE_BOOL"}
+
+
+def _require(cond: bool, msg: str) -> None:
+    if not cond:
+        raise ConfigError(msg)
+
+
+def validate_config(cfg: dict) -> dict:
+    """Validate a tileset_build config dict and return a normalized copy.
+
+    Enforces (per the water-bottom law): at most one terrain per terrain set,
+    and `mode == "default"` for any animation group whose atlas carries a
+    terrain (water-bearing edges must start in phase). Raises ConfigError on
+    the first violation.
+    """
+    _require(isinstance(cfg.get("tileset"), dict), "config missing [tileset] section")
+    tile_size = cfg["tileset"].get("tile_size")
+    _require(
+        isinstance(tile_size, list) and len(tile_size) == 2 and all(isinstance(n, int) for n in tile_size),
+        "[tileset].tile_size must be a [int, int] pixel size",
+    )
+
+    atlases = cfg.get("atlas") or []
+    _require(isinstance(atlases, list) and len(atlases) >= 1, "config needs at least one [[atlas]]")
+    atlas_ids: set[str] = set()
+    for a in atlases:
+        aid = a.get("id")
+        _require(isinstance(aid, str) and aid != "", "each [[atlas]] needs a string id")
+        _require(aid not in atlas_ids, f"duplicate atlas id: {aid}")
+        atlas_ids.add(aid)
+        _require(isinstance(a.get("texture"), str) and a["texture"] != "", f"atlas {aid} needs a texture path")
+        scan = a.get("scan", "non_transparent")
+        _require(
+            scan in ("non_transparent", "all", "explicit"),
+            f"atlas {aid}: scan must be 'non_transparent', 'all', or 'explicit' (got {scan!r})",
+        )
+        if scan == "explicit":
+            _require(isinstance(a.get("tiles"), list) and a["tiles"], f"atlas {aid}: scan='explicit' needs a [[atlas.tiles]] list")
+
+    # Terrain sets: one terrain per set (the law).
+    terrain_sets = cfg.get("terrain_set") or []
+    terrain_names: dict[str, int] = {}  # terrain name -> terrain_set index
+    for ti, ts in enumerate(terrain_sets):
+        mode = ts.get("mode", "match_corners_and_sides")
+        _require(
+            mode in ("match_corners_and_sides", "match_corners", "match_sides"),
+            f"terrain_set {ti}: unknown mode {mode!r}",
+        )
+        terrains = ts.get("terrains") or []
+        _require(
+            len(terrains) <= 1,
+            f"terrain_set {ti}: {len(terrains)} terrains declared, but the water-bottom law allows at most ONE terrain per terrain set",
+        )
+        for t in terrains:
+            name = t.get("name")
+            _require(isinstance(name, str) and name != "", f"terrain_set {ti}: each terrain needs a name")
+            _require(name not in terrain_names, f"duplicate terrain name across terrain sets: {name}")
+            terrain_names[name] = ti
+
+    # Terrain assignments: strategy known, atlas + terrain resolve.
+    for asn in cfg.get("terrain_assign") or []:
+        strat = asn.get("strategy")
+        _require(strat in ("blob47", "blob16_sides", "blob16_corners", "explicit"), f"terrain_assign: unknown strategy {strat!r}")
+        _require(asn.get("atlas") in atlas_ids, f"terrain_assign references unknown atlas {asn.get('atlas')!r}")
+        _require(asn.get("terrain") in terrain_names, f"terrain_assign references unknown terrain {asn.get('terrain')!r}")
+        if strat == "explicit":
+            _require(isinstance(asn.get("tiles"), list) and asn["tiles"], "terrain_assign strategy='explicit' needs a per-tile bits list")
+
+    # Animation groups: atlas resolves; water-bearing groups (atlas carries a
+    # terrain) must be mode='default' so coastline water stays in phase.
+    terrained_atlases = {asn.get("atlas") for asn in (cfg.get("terrain_assign") or [])}
+    for an in cfg.get("animation") or []:
+        _require(an.get("atlas") in atlas_ids, f"animation references unknown atlas {an.get('atlas')!r}")
+        _require(isinstance(an.get("frames"), int) and an["frames"] >= 2, "animation group needs frames >= 2")
+        mode = an.get("mode", "default")
+        _require(mode in ("default", "random_start"), f"animation mode must be 'default' or 'random_start' (got {mode!r})")
+        # Godot tile animation only supports contiguous horizontal or vertical
+        # frame strips (see compose_build_script). Reject other offsets early.
+        fo = an.get("frame_offset", [1, 0])
+        _require(
+            (fo == [1, 0]) or (fo == [0, 1]),
+            f"animation on atlas {an['atlas']!r}: frame_offset must be [1,0] (horizontal) or [0,1] (vertical); got {fo}",
+        )
+        if an["atlas"] in terrained_atlases and mode != "default":
+            raise ConfigError(
+                f"animation on atlas {an['atlas']!r} carries a terrain but uses mode={mode!r}; "
+                "water-bearing (terrain) tiles MUST use mode='default' so the engine starts all "
+                "water animations in phase (coastline sync contract)"
+            )
+
+    # Custom data layers: known types.
+    for cd in (cfg.get("custom_data") or {}).get("layers") or []:
+        _require(cd.get("type") in _VARIANT_TYPES, f"custom_data layer {cd.get('name')!r}: unsupported type {cd.get('type')!r}")
+
+    return cfg
+
+
+def load_config(config_path: str) -> dict:
+    """Read + validate a tileset_build config (TOML). Raises ConfigError."""
+    try:
+        raw = Path(config_path).read_bytes()
+    except OSError as e:
+        raise ConfigError(f"could not read config {config_path}: {e}") from e
+    try:
+        cfg = tomllib.loads(raw.decode("utf-8"))
+    except (tomllib.TOMLDecodeError, UnicodeDecodeError) as e:
+        raise ConfigError(f"config {config_path} is not valid TOML: {e}") from e
+    return validate_config(cfg)
+
+
+# ---------------------------------------------------------------------------
+# GDScript composition
+# ---------------------------------------------------------------------------
+
+
+def _resolve_assign_bits(asn: dict, atlas_origin: tuple[int, int]) -> dict[tuple[int, int], list[str]]:
+    """Resolve a terrain_assign into {atlas_coords: [bit names]} for the GDScript.
+
+    For blob strategies, pull the offset->bits table and translate by origin.
+    For 'explicit', read per-tile bits straight from the config.
+    """
+    strat = asn["strategy"]
+    if strat == "explicit":
+        out: dict[tuple[int, int], list[str]] = {}
+        for t in asn["tiles"]:
+            coords = tuple(t["coords"])
+            out[(coords[0], coords[1])] = list(t.get("bits", []))
+        return out
+    table = _STRATEGY_TABLES[strat]()
+    ox, oy = asn.get("origin", list(atlas_origin))
+    return {(ox + col, oy + row): bits for (col, row), bits in table.items()}
+
+
+def _gd_vec2i(x: int, y: int) -> str:
+    return f"Vector2i({x}, {y})"
+
+
+def compose_build_script(cfg: dict, out_path_res: str, nonce: str) -> str:
+    """Compose the single GDScript that builds and saves the TileSet.
+
+    The op-order below is load-bearing (verified engine facts, procgen-tools.md
+    §1): create TileSet -> custom-data/physics/nav layers -> terrain sets +
+    terrains -> per atlas TileSetAtlasSource (texture, texture_region_size) ->
+    apply animation map + RESERVE frame regions -> scan remaining sheet OR take
+    explicit tiles -> create_tile per base cell + animation columns/frames/
+    duration/mode -> per tile get_tile_data(coords, 0): terrain_set FIRST, then
+    terrain, then peering bits, then collision polygons + custom data ->
+    ResourceSaver.save -> reload sanity check.
+    """
+    begin = f"{_SENTINEL_BEGIN}:{nonce}"
+    end = f"{_SENTINEL_END}:{nonce}"
+
+    ts = cfg["tileset"]
+    tile_size = ts["tile_size"]
+
+    # Build a fully-resolved plan dict in Python and hand it to the GDScript as
+    # a JSON literal — the GDScript stays a dumb executor of a validated plan.
+    plan: dict = {
+        "tile_size": [tile_size[0], tile_size[1]],
+        "custom_data": [],
+        "physics_full_square": (cfg.get("physics") or {}).get("default_full_square") or [],
+        "terrain_sets": [],
+        "terrain_index": {},  # terrain name -> [set_idx, terrain_idx]
+        "atlases": [],
+    }
+
+    for cd in (cfg.get("custom_data") or {}).get("layers") or []:
+        plan["custom_data"].append({"name": cd["name"], "type": _VARIANT_TYPES[cd["type"]]})
+
+    for ti, tset in enumerate(cfg.get("terrain_set") or []):
+        mode = tset.get("mode", "match_corners_and_sides").upper()
+        terrains = tset.get("terrains") or []
+        plan["terrain_sets"].append(
+            {
+                "mode": "TERRAIN_MODE_" + mode,
+                "terrains": [{"name": t["name"], "color": t.get("color", "#ffffff")} for t in terrains],
+            }
+        )
+        for terr_idx, t in enumerate(terrains):
+            plan["terrain_index"][t["name"]] = [ti, terr_idx]
+
+    # Index terrain_assign + animation by atlas id.
+    assigns_by_atlas: dict[str, list[dict]] = {}
+    for asn in cfg.get("terrain_assign") or []:
+        assigns_by_atlas.setdefault(asn["atlas"], []).append(asn)
+    anims_by_atlas: dict[str, list[dict]] = {}
+    for an in cfg.get("animation") or []:
+        anims_by_atlas.setdefault(an["atlas"], []).append(an)
+
+    for a in cfg["atlas"]:
+        aid = a["id"]
+        atlas_plan: dict = {
+            "id": aid,
+            "texture": a["texture"],
+            "margins": a.get("margins", [0, 0]),
+            "separation": a.get("separation", [0, 0]),
+            "scan": a.get("scan", "non_transparent"),
+            "explicit_tiles": [list(t["coords"]) for t in (a.get("tiles") or [])],
+            "animations": [],
+            "assign": {},  # "x,y" -> {terrain, bits}
+        }
+
+        # Animation groups: enumerate BASE regions (frame 0) + all reserved
+        # frame regions. Frame regions consume real atlas grid space and are
+        # never registered as separate tiles.
+        for an in anims_by_atlas.get(aid, []):
+            (bx0, by0), (bx1, by1) = an["base_region"]
+            fx, fy = an.get("frame_offset", [1, 0])
+            frames = an["frames"]
+            base_cells = []
+            reserved = []
+            for by in range(by0, by1 + 1):
+                for bx in range(bx0, bx1 + 1):
+                    base_cells.append([bx, by])
+                    for f in range(1, frames):
+                        reserved.append([bx + f * fx, by + f * fy])
+            # Godot lays animation frames out left-to-right, top-to-bottom in a
+            # rectangle of `columns` width, contiguous from the base coords, so
+            # set_tile_animation_columns must MATCH the reserved layout: a
+            # horizontal strip (frame_offset [1,0]) => columns = frames; a
+            # vertical strip (frame_offset [0,1]) => columns = 1. Any other
+            # offset can't be expressed by the engine's column layout — flag it.
+            if fy == 0 and fx == 1:
+                columns = frames
+            elif fx == 0 and fy == 1:
+                columns = 1
+            else:
+                raise ConfigError(
+                    f"animation on atlas {aid!r}: frame_offset {[fx, fy]} is not a contiguous "
+                    "horizontal ([1,0]) or vertical ([0,1]) strip; Godot's tile animation only "
+                    "supports contiguous frames laid out by column count"
+                )
+            atlas_plan["animations"].append(
+                {
+                    "base_cells": base_cells,
+                    "reserved": reserved,
+                    "frames": frames,
+                    "columns": columns,
+                    "duration": an.get("duration", 1.0),
+                    "mode": "TILE_ANIMATION_MODE_DEFAULT" if an.get("mode", "default") == "default" else "TILE_ANIMATION_MODE_RANDOM_START_TIMES",
+                }
+            )
+
+        # Terrain assignments -> per-cell {terrain, bits}.
+        for asn in assigns_by_atlas.get(aid, []):
+            terr = asn["terrain"]
+            bits_by_coords = _resolve_assign_bits(asn, tuple(asn.get("origin", [0, 0])))
+            for (cx, cy), bits in bits_by_coords.items():
+                atlas_plan["assign"][f"{cx},{cy}"] = {"terrain": terr, "bits": bits}
+
+        plan["atlases"].append(atlas_plan)
+
+    plan_json = json.dumps(plan)
+
+    # The GDScript. Kept as a here-doc; the plan JSON is injected as a string
+    # literal and parsed with JSON.parse_string inside the script.
+    script = f'''extends SceneTree
+
+const PLAN_JSON := {json.dumps(plan_json)}
+const OUT_PATH := {json.dumps(out_path_res)}
+
+func _initialize() -> void:
+\tvar warnings: Array = []
+\tvar report: Dictionary = _build(warnings)
+\treport["warnings"] = warnings
+\tprint("{begin}")
+\tprint(JSON.stringify(report))
+\tprint("{end}")
+\tquit(0)
+
+func _cell_key(x: int, y: int) -> String:
+\treturn str(x) + "," + str(y)
+
+func _build(warnings: Array) -> Dictionary:
+\tvar plan: Dictionary = JSON.parse_string(PLAN_JSON)
+\tif plan == null:
+\t\treturn {{"ok": false, "error": "internal: plan JSON did not parse"}}
+
+\tvar tile_size := Vector2i(int(plan["tile_size"][0]), int(plan["tile_size"][1]))
+\tvar tileset := TileSet.new()
+\ttileset.tile_size = tile_size
+
+\t# --- custom-data layers (before tiles reference them) ---
+\tfor i in range((plan["custom_data"] as Array).size()):
+\t\tvar cd: Dictionary = plan["custom_data"][i]
+\t\ttileset.add_custom_data_layer(i)
+\t\ttileset.set_custom_data_layer_name(i, cd["name"])
+\t\ttileset.set_custom_data_layer_type(i, _variant_type(cd["type"]))
+
+\t# --- physics + navigation layers (one each; edge collision lives on layer 0) ---
+\ttileset.add_physics_layer(0)
+\ttileset.add_navigation_layer(0)
+
+\t# --- terrain sets + terrains (terrain_set must exist before any tile sets terrain) ---
+\tfor ti in range((plan["terrain_sets"] as Array).size()):
+\t\tvar tset: Dictionary = plan["terrain_sets"][ti]
+\t\ttileset.add_terrain_set(ti)
+\t\ttileset.set_terrain_set_mode(ti, _terrain_mode(tset["mode"]))
+\t\tvar terrains: Array = tset["terrains"]
+\t\tfor tj in range(terrains.size()):
+\t\t\ttileset.add_terrain(ti, tj)
+\t\t\ttileset.set_terrain_name(ti, tj, terrains[tj]["name"])
+\t\t\ttileset.set_terrain_color(ti, tj, _color(terrains[tj]["color"]))
+
+\tvar terrain_index: Dictionary = plan["terrain_index"]
+\tvar full_square: Array = plan["physics_full_square"]
+
+\tvar atlas_report: Array = []
+\tvar total_tiles := 0
+\tvar total_animated := 0
+\tvar total_bits := 0
+\tvar total_skipped := 0
+
+\tfor atlas_plan in plan["atlases"]:
+\t\tvar tex_path: String = atlas_plan["texture"]
+\t\tvar tex := _load_texture(tex_path)
+\t\tif tex == null:
+\t\t\treturn {{"ok": false, "error": "could not load atlas texture: " + tex_path}}
+
+\t\tvar src := TileSetAtlasSource.new()
+\t\tsrc.texture = tex
+\t\tsrc.texture_region_size = tile_size
+\t\tsrc.margins = Vector2i(int(atlas_plan["margins"][0]), int(atlas_plan["margins"][1]))
+\t\tsrc.separation = Vector2i(int(atlas_plan["separation"][0]), int(atlas_plan["separation"][1]))
+
+\t\tvar img := tex.get_image()
+\t\tvar grid_w := 0
+\t\tvar grid_h := 0
+\t\tif img != null:
+\t\t\tgrid_w = int(floor(float(img.get_width() - src.margins.x) / float(tile_size.x + src.separation.x)))
+\t\t\tgrid_h = int(floor(float(img.get_height() - src.margins.y) / float(tile_size.y + src.separation.y)))
+
+\t\t# 1) RESERVE animation frame regions FIRST — they consume grid space and
+\t\t#    must never be scanned/created as standalone tiles.
+\t\tvar reserved := {{}}
+\t\tvar base_cells := {{}}   # "x,y" -> animation dict for that base cell
+\t\tfor anim in atlas_plan["animations"]:
+\t\t\tfor rc in anim["reserved"]:
+\t\t\t\treserved[_cell_key(int(rc[0]), int(rc[1]))] = true
+\t\t\tfor bc in anim["base_cells"]:
+\t\t\t\tbase_cells[_cell_key(int(bc[0]), int(bc[1]))] = anim
+
+\t\t# 2) Collect base cells to create: explicit list, or scan.
+\t\tvar cells_to_make: Array = []
+\t\tif atlas_plan["scan"] == "explicit":
+\t\t\tfor c in atlas_plan["explicit_tiles"]:
+\t\t\t\tcells_to_make.append(Vector2i(int(c[0]), int(c[1])))
+\t\telse:
+\t\t\tvar scan_all: bool = atlas_plan["scan"] == "all"
+\t\t\tfor gy in range(grid_h):
+\t\t\t\tfor gx in range(grid_w):
+\t\t\t\t\tvar key := _cell_key(gx, gy)
+\t\t\t\t\tif reserved.has(key):
+\t\t\t\t\t\tcontinue
+\t\t\t\t\tif scan_all or _cell_has_pixels(img, gx, gy, tile_size, src.margins, src.separation):
+\t\t\t\t\t\tcells_to_make.append(Vector2i(gx, gy))
+\t\t\t\t\telse:
+\t\t\t\t\t\ttotal_skipped += 1
+
+\t\t# Always include animation base cells (a base cell may be transparent at
+\t\t# frame 0 sampling but is a real animated tile).
+\t\tfor bk in base_cells.keys():
+\t\t\tvar parts: PackedStringArray = bk.split(",")
+\t\t\tvar bcoords := Vector2i(int(parts[0]), int(parts[1]))
+\t\t\tif not cells_to_make.has(bcoords):
+\t\t\t\tcells_to_make.append(bcoords)
+
+\t\t# 3) create_tile per base cell + animation setup for animated bases.
+\t\tvar made := 0
+\t\tvar animated := 0
+\t\tfor coords in cells_to_make:
+\t\t\tif not src.has_room_for_tile(coords, Vector2i.ONE, 1, Vector2i.ZERO, 1, Vector2i(-1, -1)):
+\t\t\t\twarnings.append("no room for tile at " + str(coords) + " in atlas " + str(atlas_plan["id"]))
+\t\t\t\tcontinue
+\t\t\tsrc.create_tile(coords)
+\t\t\tmade += 1
+\t\t\tvar bk := _cell_key(coords.x, coords.y)
+\t\t\tif base_cells.has(bk):
+\t\t\t\tvar anim: Dictionary = base_cells[bk]
+\t\t\t\tsrc.set_tile_animation_columns(coords, int(anim["columns"]))
+\t\t\t\tsrc.set_tile_animation_frames_count(coords, int(anim["frames"]))
+\t\t\t\tsrc.set_tile_animation_mode(coords, _anim_mode(anim["mode"]))
+\t\t\t\tfor f in range(int(anim["frames"])):
+\t\t\t\t\tsrc.set_tile_animation_frame_duration(coords, f, float(anim["duration"]))
+\t\t\t\tanimated += 1
+
+\t\tvar source_id := tileset.add_source(src)
+
+\t\t# 4) Per-tile data: terrain_set FIRST, then terrain, then peering bits,
+\t\t#    then collision + custom data.
+\t\tvar assign: Dictionary = atlas_plan["assign"]
+\t\tvar bits_assigned := 0
+\t\tfor coords in cells_to_make:
+\t\t\tif not src.has_tile(coords):
+\t\t\t\tcontinue
+\t\t\tvar td := src.get_tile_data(coords, 0)
+\t\t\tif td == null:
+\t\t\t\tcontinue
+\t\t\tvar akey := _cell_key(coords.x, coords.y)
+\t\t\tif assign.has(akey):
+\t\t\t\tvar a: Dictionary = assign[akey]
+\t\t\t\tvar tname: String = a["terrain"]
+\t\t\t\tif terrain_index.has(tname):
+\t\t\t\t\tvar idx: Array = terrain_index[tname]
+\t\t\t\t\ttd.terrain_set = int(idx[0])
+\t\t\t\t\ttd.terrain = int(idx[1])
+\t\t\t\t\tfor bit_name in a["bits"]:
+\t\t\t\t\t\tvar bit := _cell_neighbor(bit_name)
+\t\t\t\t\t\tif bit >= 0:
+\t\t\t\t\t\t\ttd.set_terrain_peering_bit(bit, int(idx[1]))
+\t\t\t\t\t\t\tbits_assigned += 1
+\t\t\t\t\tif full_square.has(tname):
+\t\t\t\t\t\t_add_full_square_collision(td, tile_size)
+
+\t\ttotal_tiles += made
+\t\ttotal_animated += animated
+\t\ttotal_bits += bits_assigned
+\t\tatlas_report.append({{
+\t\t\t"id": atlas_plan["id"],
+\t\t\t"source_id": source_id,
+\t\t\t"tiles": made,
+\t\t\t"animated_groups": animated,
+\t\t\t"reserved_frame_regions": reserved.size(),
+\t\t\t"bits_assigned": bits_assigned,
+\t\t}})
+
+\t# --- save (ensure the out dir exists first) ---
+\tvar out_dir := OUT_PATH.get_base_dir()
+\tif out_dir != "" and not DirAccess.dir_exists_absolute(out_dir):
+\t\tDirAccess.make_dir_recursive_absolute(out_dir)
+\tvar save_err := ResourceSaver.save(tileset, OUT_PATH)
+\tif save_err != OK:
+\t\treturn {{"ok": false, "error": "ResourceSaver.save failed: " + str(save_err)}}
+
+\t# --- reload sanity check ---
+\tvar reloaded := ResourceLoader.load(OUT_PATH, "TileSet", ResourceLoader.CACHE_MODE_IGNORE) as TileSet
+\tif reloaded == null:
+\t\treturn {{"ok": false, "error": "reload failed: ResourceLoader.load returned null for " + OUT_PATH}}
+\tvar reload_tiles := 0
+\tfor si in range(reloaded.get_source_count()):
+\t\tvar rsid := reloaded.get_source_id(si)
+\t\tvar rsrc := reloaded.get_source(rsid) as TileSetAtlasSource
+\t\tif rsrc != null:
+\t\t\treload_tiles += rsrc.get_tiles_count()
+
+\treturn {{
+\t\t"ok": true,
+\t\t"out_path": OUT_PATH,
+\t\t"tile_size": [tile_size.x, tile_size.y],
+\t\t"total_tiles": total_tiles,
+\t\t"total_animated_groups": total_animated,
+\t\t"total_bits_assigned": total_bits,
+\t\t"skipped_transparent": total_skipped,
+\t\t"terrain_sets": (plan["terrain_sets"] as Array).size(),
+\t\t"custom_data_layers": (plan["custom_data"] as Array).size(),
+\t\t"atlases": atlas_report,
+\t\t"reload_source_count": reloaded.get_source_count(),
+\t\t"reload_tile_count": reload_tiles,
+\t}}
+
+# Load an atlas texture robustly. Prefer ResourceLoader (works for already-
+# imported project sheets, preserving their import settings). Fall back to
+# reading the raw PNG/image bytes off disk via Image.load — this is what makes a
+# freshly-authored, never-imported sheet (or a headless CI fixture with no
+# .godot/imported cache) work, since the resource importer has not run.
+func _load_texture(tex_path: String) -> Texture2D:
+\tif ResourceLoader.exists(tex_path):
+\t\tvar res := ResourceLoader.load(tex_path) as Texture2D
+\t\tif res != null:
+\t\t\treturn res
+\tvar abs_path := ProjectSettings.globalize_path(tex_path)
+\tvar img := Image.new()
+\tif img.load(abs_path) != OK:
+\t\treturn null
+\treturn ImageTexture.create_from_image(img)
+
+func _cell_has_pixels(img: Image, gx: int, gy: int, tile_size: Vector2i, margins: Vector2i, sep: Vector2i) -> bool:
+\tif img == null:
+\t\treturn true
+\tvar ox := margins.x + gx * (tile_size.x + sep.x)
+\tvar oy := margins.y + gy * (tile_size.y + sep.y)
+\tfor py in range(tile_size.y):
+\t\tfor px in range(tile_size.x):
+\t\t\tvar sx := ox + px
+\t\t\tvar sy := oy + py
+\t\t\tif sx < 0 or sy < 0 or sx >= img.get_width() or sy >= img.get_height():
+\t\t\t\tcontinue
+\t\t\tif img.get_pixel(sx, sy).a > 0.0:
+\t\t\t\treturn true
+\treturn false
+
+func _add_full_square_collision(td: TileData, tile_size: Vector2i) -> void:
+\ttd.add_collision_polygon(0)
+\tvar hx := float(tile_size.x) / 2.0
+\tvar hy := float(tile_size.y) / 2.0
+\tvar poly := PackedVector2Array([
+\t\tVector2(-hx, -hy), Vector2(hx, -hy), Vector2(hx, hy), Vector2(-hx, hy)
+\t])
+\ttd.set_collision_polygon_points(0, 0, poly)
+
+func _variant_type(name: String) -> int:
+\tmatch name:
+\t\t"TYPE_STRING": return TYPE_STRING
+\t\t"TYPE_INT": return TYPE_INT
+\t\t"TYPE_FLOAT": return TYPE_FLOAT
+\t\t"TYPE_BOOL": return TYPE_BOOL
+\treturn TYPE_STRING
+
+func _terrain_mode(name: String) -> int:
+\tmatch name:
+\t\t"TERRAIN_MODE_MATCH_CORNERS_AND_SIDES": return TileSet.TERRAIN_MODE_MATCH_CORNERS_AND_SIDES
+\t\t"TERRAIN_MODE_MATCH_CORNERS": return TileSet.TERRAIN_MODE_MATCH_CORNERS
+\t\t"TERRAIN_MODE_MATCH_SIDES": return TileSet.TERRAIN_MODE_MATCH_SIDES
+\treturn TileSet.TERRAIN_MODE_MATCH_CORNERS_AND_SIDES
+
+func _anim_mode(name: String) -> int:
+\tif name == "TILE_ANIMATION_MODE_RANDOM_START_TIMES":
+\t\treturn TileSetAtlasSource.TILE_ANIMATION_MODE_RANDOM_START_TIMES
+\treturn TileSetAtlasSource.TILE_ANIMATION_MODE_DEFAULT
+
+func _color(hexcode: String) -> Color:
+\treturn Color.html(hexcode)
+
+# Map our compass bit names to TileSet.CellNeighbor enum values. NOTE: the
+# built-in terrain solver (#76493 wrong-terrain, #89844 ignored diagonal bits;
+# both open on 4.6.2 + 4.7-stable as of 2026-07-03) is deliberately NOT used —
+# these bits are read by the in-house matcher. Re-audit by grepping the issue
+# numbers on any engine bump.
+func _cell_neighbor(name: String) -> int:
+\tmatch name:
+\t\t"TOP_SIDE": return TileSet.CELL_NEIGHBOR_TOP_SIDE
+\t\t"RIGHT_SIDE": return TileSet.CELL_NEIGHBOR_RIGHT_SIDE
+\t\t"BOTTOM_SIDE": return TileSet.CELL_NEIGHBOR_BOTTOM_SIDE
+\t\t"LEFT_SIDE": return TileSet.CELL_NEIGHBOR_LEFT_SIDE
+\t\t"TOP_RIGHT_CORNER": return TileSet.CELL_NEIGHBOR_TOP_RIGHT_CORNER
+\t\t"BOTTOM_RIGHT_CORNER": return TileSet.CELL_NEIGHBOR_BOTTOM_RIGHT_CORNER
+\t\t"BOTTOM_LEFT_CORNER": return TileSet.CELL_NEIGHBOR_BOTTOM_LEFT_CORNER
+\t\t"TOP_LEFT_CORNER": return TileSet.CELL_NEIGHBOR_TOP_LEFT_CORNER
+\t\t"TOP_CORNER": return TileSet.CELL_NEIGHBOR_TOP_CORNER
+\t\t"RIGHT_CORNER": return TileSet.CELL_NEIGHBOR_RIGHT_CORNER
+\t\t"BOTTOM_CORNER": return TileSet.CELL_NEIGHBOR_BOTTOM_CORNER
+\t\t"LEFT_CORNER": return TileSet.CELL_NEIGHBOR_LEFT_CORNER
+\treturn -1
+'''
+    return script
+
+
+# ---------------------------------------------------------------------------
+# Tool entry point
+# ---------------------------------------------------------------------------
+
+
+def _summarize(report: dict, out_path: str) -> str:
+    if not report.get("ok"):
+        return f"ERROR — tileset_build: {report.get('error', 'unknown build error')}"
+    lines = [
+        f"OK  TileSet built: {out_path}",
+        f"  tile size: {report['tile_size'][0]}x{report['tile_size'][1]}",
+        f"  tiles: {report['total_tiles']}  animated groups: {report['total_animated_groups']}  "
+        f"peering bits: {report['total_bits_assigned']}  skipped transparent: {report['skipped_transparent']}",
+        f"  terrain sets: {report['terrain_sets']}  custom-data layers: {report['custom_data_layers']}",
+    ]
+    for a in report.get("atlases", []):
+        lines.append(
+            f"  atlas {a['id']} (src {a['source_id']}): {a['tiles']} tiles, "
+            f"{a['animated_groups']} animated, {a['reserved_frame_regions']} reserved frame regions, "
+            f"{a['bits_assigned']} bits"
+        )
+    lines.append(
+        f"  reload check: {report['reload_tile_count']} tiles across {report['reload_source_count']} source(s)"
+    )
+    warns = report.get("warnings") or []
+    if warns:
+        lines.append(f"  warnings ({len(warns)}):")
+        for w in warns[:20]:
+            lines.append(f"    - {w}")
+    lines.append("  Manual pass worth doing: open the .tres in the Godot editor once against the real sheet to eyeball edges/animation.")
+    return "\n".join(lines)
+
+
+def tileset_build(config_path: str, out_path: str, timeout: int = 180) -> str:
+    """Build a `.tres` TileSet from a declarative TOML config, headless.
+
+    Validates the config in Python (water-bottom law: <=1 terrain per terrain
+    set; water-bearing animated tiles must be mode='default'), composes ONE
+    GDScript, parse-checks it, runs it via the shared headless probe, parses the
+    nonce'd JSON report, and returns a human-readable summary. Never raises —
+    config/build errors come back as structured report strings.
+    """
+    try:
+        cfg = load_config(config_path)
+    except ConfigError as e:
+        return f"ERROR — invalid config: {e}"
+
+    # Resolve out_path into the project (write only to declared out paths).
+    try:
+        out_abs = config.resolve_project_path(out_path)
+    except config.PathEscapeError:
+        return f"Refused: {out_path} resolves outside the project root."
+    if out_path.startswith("res://"):
+        out_res = out_path
+    else:
+        root = config.PROJECT_ROOT.resolve()
+        out_res = "res://" + out_abs.resolve().relative_to(root).as_posix()
+
+    nonce, _, _ = make_sentinels()
+    try:
+        source = compose_build_script(cfg, out_res, nonce)
+    except ConfigError as e:
+        return f"ERROR — invalid config: {e}"
+
+    # Parse-check the composed GDScript before running (existing mcp discipline).
+    parse_err = _parse_check(source)
+    if parse_err:
+        return f"ERROR — composed build script did not parse:\n{parse_err}"
+
+    r = runner.run_temp_probe(source, timeout=timeout)
     if r.get("timeout"):
-        return "UNAVAILABLE — procgen harness probe timed out (Godot may be unavailable or stuck)."
+        return f"UNAVAILABLE — tileset_build timed out after {timeout}s (Godot may be unavailable or the sheet is very large)."
     if r.get("rc") is None:
-        return f"UNAVAILABLE — {r.get('err') or 'procgen harness probe could not launch Godot.'}"
+        return f"UNAVAILABLE — {r.get('err') or 'tileset_build could not launch Godot.'}"
 
     out = r.get("out") or ""
-    m = _JSON_RE.search(out)
-    if not m:
+    payload, reason = parse_sentinel_json(out, nonce)
+    if payload is None:
         tail = (r.get("err") or out).strip()
-        return f"UNAVAILABLE — procgen harness probe produced no PROCGEN_JSON sentinel block.\n{tail[-500:]}"
+        return f"UNAVAILABLE — tileset_build produced no parseable report ({reason}).\n{tail[-800:]}"
+    return _summarize(payload, out_res)
 
+
+def _parse_check(source: str) -> str:
+    """Parse-check a composed GDScript via a temp file + --check-only.
+
+    Returns "" on success, or an error message. Reuses runner._run so binary
+    resolution/timeouts match the rest of the server.
+    """
+    import os
+    import tempfile
+
+    fd, gd_path = tempfile.mkstemp(suffix=".gd", prefix="godot_mcp_procgen_check_")
     try:
-        payload = json.loads(m.group(1))
-    except json.JSONDecodeError as e:
-        return f"UNAVAILABLE — procgen harness probe printed malformed JSON: {e}"
+        try:
+            os.write(fd, source.encode("utf-8"))
+        finally:
+            os.close(fd)
+        r = runner._run(["--check-only", "--script", gd_path], timeout=60)
+    finally:
+        runner._safe_unlink(gd_path)
+        runner._safe_unlink(gd_path + ".uid")
 
-    version = payload.get("engine_version", "unknown")
-    return f"Godot {version} — procgen harness OK"
+    if r.get("timeout"):
+        return ""  # can't parse-check offline; let the real run surface it
+    if r.get("rc") is None:
+        return ""  # Godot unavailable; real run will report UNAVAILABLE
+    if r["rc"] == 0 and not (r.get("err") or "").strip():
+        return ""
+    msg = ((r.get("err") or "") + "\n" + (r.get("out") or "")).strip()
+    return msg[-2000:]

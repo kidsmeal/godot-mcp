@@ -74,6 +74,16 @@ keys) that don't exist. This server removes both failure modes by serving:
 | `godot_patch_script(path, old, new)` | Exact-match patch with parse-check + rollback |
 | `godot_fix_script(path)` | Apply safe mechanical lint fixes (`:=`, `-> void`) + re-verify |
 
+### Procgen
+
+Tools that build and generate content headlessly (the `procgen_*` family). They compose a
+single GDScript, parse-check it, run it via the shared headless probe, and parse a nonce-framed
+JSON report — the same collision-resistant round-trip every procgen tool inherits.
+
+| Tool | What it does |
+|---|---|
+| `procgen_tileset_build(config_path, out_path)` | Build a `.tres` TileSet from a declarative TOML config: atlas sources with animation-aware sheet scanning (frame regions are reserved, never tiled), terrain sets + peering bits via a `blob47` / `blob16_sides` / `blob16_corners` / `explicit` strategy, physics + typed custom-data layers. Validates the water-bottom law (≤1 terrain per terrain set; water-bearing animated tiles must be `mode="default"`). Never calls the built-in terrain solver (#76493 / #89844) — bits are assigned directly for the in-house matcher |
+
 The validation tools capture output via Godot's `--log-file` (robust on the Windows
 GUI build) and read pass/fail from the process exit code. The edit tools never leave the
 project in a non-parsing state — they back up, write, run `--check-only`, and roll back on
