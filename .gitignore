@@ -16,3 +16,6 @@ data/godot_docs/
 
 # ClauDHD local session state
 .now/
+
+# Spike/evidence render artifacts (regenerate by re-running the spike)
+test-results/

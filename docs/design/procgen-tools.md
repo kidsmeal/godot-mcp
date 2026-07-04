@@ -67,3 +67,60 @@ T1+T2 unblock the minifantasy import pipeline (ART_PIPELINE choose-pass). T3 mak
 
 - PR #108629 (diagonal terrain rework): **RESOLVED 2026-07-03 — stop watching.** 4.7-stable shipped without it (still open, milestone 4.x, idle since 2026-02-17). Custom-build option assessed and rejected the same day: the cherry-pick is easy (2 files, applies near-clean, this machine builds Godot comfortably) but the patch is unreviewed with author-flagged regressions, fixes only the diagonal class (perf #80635 and one-terrain-per-call untouched), and a runtime dependency means shipping a forked engine. Under the matcher architecture the engine solver is irrelevant to us; an eventual upstream merge would improve editor hand-painting only (ChunkTemplates are authored with explicit tiles, so nothing blocks).
 - Gaea 2.0 stabilizing or the WFC addon releasing again: re-evaluate only for chunk-template variety, not for core worldgen.
+
+## S1 verdict
+
+**S1 PASSES (2026-07-04, live against Godot 4.6.2-stable on this machine).** The in-house matcher resolves every reachable land-vs-water shape correctly for the mode the game ships (MATCH_CORNERS), well inside the materialize budget. The game repo may implement `systems/worldgen/terrain_matcher.gd` by porting the signature helper below verbatim. Only if a real-art failure the audit cannot explain shows up later does the parked BetterTerrain fallback get evaluated.
+
+**Adjustment from the plan text.** Per the 2026-07-04 grounding correction, this spike validated **MATCH_CORNERS** (the shipping mode), not the ~47 corners+sides the older law assumed, and used a **synthetic full-coverage sheet** (built through the real `procgen_tileset_build`), not the ForgottenPlains art — the real-art config is a later, separate step. The eyeball pass therefore checks coastline SHAPE coherence, not real-art fidelity.
+
+**Grounding finding (blocker filed for a later procgen module phase — not fixed here, the spike does not edit the module).** Square-grid **MATCH_CORNERS uses the four DIAGONAL corner peering bits** (`TOP_RIGHT_CORNER`, `BOTTOM_RIGHT_CORNER`, `BOTTOM_LEFT_CORNER`, `TOP_LEFT_CORNER`), verified live via `TileData.is_valid_terrain_peering_bit` on 4.6.2. But `procgen.blob16_corners_table` and `expected_signature_set("MATCH_CORNERS")` currently emit the **axis-aligned CORNER bits** (`TOP_CORNER`/`RIGHT_CORNER`/`BOTTOM_CORNER`/`LEFT_CORNER`), which are hexagonal/isometric-grid bits the engine REJECTS on a square grid. Consequence: a sheet built with `strategy = "blob16_corners"` audits as **all-isolated (0 of 16 covered)** — the peering bits are silently dropped at build time. The spike therefore authored its synthetic sheet with `strategy = "explicit"` supplying the correct diagonal-corner bits (which is the real shipping shape anyway — the design doc already flags the real ForgottenPlains edges need an `explicit`/`minifantasy_edges` layout, not the standard `blob16` grid). **Fix owed in a later module phase:** correct `blob16_corners_table` (and the MATCH_CORNERS branch of `expected_signature_set`) to the diagonal-corner bits + the Wang-corner rule below, and re-point its unit tests. The matcher spec is now committed offline as `tests/test_terrain_matcher_spec.py` (the correct diagonal-corner derivation), so the fix has a target to match.
+
+**Timings.** Full 96×96 resolve (7552 ground cells, eroded rect + bay + ponds): **17.9 ms** in plain Python, no per-cell allocation beyond the signature string. Budget is the game plan's 150 ms materialize target — the resolve is ~12% of it, with the GDScript port expected in the same order (the #80635 thread's plain-GDScript numbers suggested large headroom, confirmed).
+
+**Hand-computed assertions (all PASS).** Toy 20×20 landmass (centered eroded rect, an L-notch bay on the right, an interior 2×2 pond). Each cell's correct MATCH_CORNERS signature was computed by hand and the matcher's pick asserted to carry exactly that signature:
+
+| category | cell (x,y) | expected signature | result |
+|---|---|---|---|
+| interior | (3,16) | `BOTTOM_LEFT_CORNER,BOTTOM_RIGHT_CORNER,TOP_LEFT_CORNER,TOP_RIGHT_CORNER` | PASS (picked atlas (3,3)) |
+| straight-edge (top) | (8,2) | `BOTTOM_LEFT_CORNER,BOTTOM_RIGHT_CORNER` | PASS (picked atlas (2,1)) |
+| straight-edge (left) | (2,10) | `BOTTOM_RIGHT_CORNER,TOP_RIGHT_CORNER` | PASS (picked atlas (3,0)) |
+| outer-corner (convex island tip) | (2,2) | `BOTTOM_RIGHT_CORNER` | PASS (picked atlas (2,0)) |
+| inner-corner (concave, pond SE) | (7,7) | `BOTTOM_LEFT_CORNER,BOTTOM_RIGHT_CORNER,TOP_RIGHT_CORNER` | PASS (picked atlas (3,1)) |
+
+Coverage of the synthetic sheet: all **16 diagonal-corner classes covered, 0 missing**, `procgen_terrain_audit` reported CLEAN. Matcher misses across both the toy and 96×96 resolves: **0** (every shape exact-matched; the full-interior fallback was never taken). Note the inner-corner/outer-corner distinction is only meaningful under the *diagonal-corner* MATCH_CORNERS rule; under the module's current (buggy) axis-aligned rule the concave pond corners collapse to full-interior and the distinction vanishes — a second reason the blob16_corners fix matters.
+
+**Eyeball render.** `test-results/s1/s1_island.png` (synthetic art, animated water at frame 0, x8 nearest-neighbor). Coastline shape is coherent: the four island corners are distinct convex-corner tiles, each straight edge uses one consistent edge tile per orientation, the interior pond is cleanly ringed by four concave inner-corner tiles + straight edges, and the L-notch bay shows the correct concave corners where its walls meet the land.
+
+**Port-ready matcher core (the game copies this signature derivation into GDScript).** Under the water-bottom law the mask is same-layer land-vs-empty; off-mask cells are water (land never reaches a border). A diagonal corner bit is set iff the diagonal neighbor and BOTH cardinals flanking it are ground (Wang-corner rule). The key format matches what `procgen_terrain_audit` emits (set corner-bit names, sorted, comma-joined; `""` = isolated), so the matcher looks its own key up directly in the audit `coverage[set]["signatures"]` table:
+
+```python
+_CORNER_RULE = {
+    "TOP_RIGHT_CORNER":    ("N", "NE", "E"),
+    "BOTTOM_RIGHT_CORNER": ("S", "SE", "E"),
+    "BOTTOM_LEFT_CORNER":  ("S", "SW", "W"),
+    "TOP_LEFT_CORNER":     ("N", "NW", "W"),
+}
+_NEIGHBOR_OFFSETS = {
+    "N": (0, -1), "E": (1, 0), "S": (0, 1), "W": (-1, 0),
+    "NE": (1, -1), "SE": (1, 1), "SW": (-1, 1), "NW": (-1, -1),
+}
+
+def corner_signature_key(mask, x, y):
+    """MATCH_CORNERS diagonal-corner signature key for the ground cell (x, y).
+    mask(x, y) -> bool is True iff that cell is ground (same layer); off-mask is
+    water. Returns the sorted, comma-joined set corner-bit names ("" = isolated).
+    """
+    bits = []
+    for bit_name, (a, d, b) in _CORNER_RULE.items():
+        ax, ay = _NEIGHBOR_OFFSETS[a]
+        dx, dy = _NEIGHBOR_OFFSETS[d]
+        bx, by = _NEIGHBOR_OFFSETS[b]
+        if mask(x + ax, y + ay) and mask(x + dx, y + dy) and mask(x + bx, y + by):
+            bits.append(bit_name)
+    return ",".join(sorted(bits))
+```
+
+Resolve wrapper (also ported): exact-match `corner_signature_key` in `coverage[set]["signatures"]`; among variant tiles for a key, a seeded position-stable pick tie-broken by `(source_id, atlas_x, atlas_y)` order; on a miss, fall back to the full-interior tile (`BOTTOM_LEFT_CORNER,BOTTOM_RIGHT_CORNER,TOP_LEFT_CORNER,TOP_RIGHT_CORNER`) and emit a loud debug line. On a full sheet the fallback is never reached (0 misses here).
+
+This unblocks the game plan's phase 3 (`terrain_matcher.gd`), with one carry-in: the game's tileset build must supply the diagonal-corner bits (via `explicit`/`minifantasy_edges`), not the current `blob16_corners` strategy, until that module bug is fixed.
