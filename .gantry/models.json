@@ -1,0 +1,18 @@
+{
+  "roles": {
+    "implementer": { "backend": "native", "model": "sonnet" },
+    "phase-planner": { "backend": "native", "model": "opus" },
+    "design-reviewer": { "backend": "native", "model": "opus" },
+    "phase-reviewer": { "backend": "codex", "model": "gpt-5.5" }
+  },
+  "backends": {
+    "native": { "type": "native" },
+    "claude": { "type": "claude-headless" },
+    "codex": {
+      "type": "cli",
+      "cmd": "codex exec --model {model} --sandbox {sandbox} --skip-git-repo-check",
+      "promptVia": "stdin",
+      "sandbox": "workspace-write"
+    }
+  }
+}

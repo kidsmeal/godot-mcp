@@ -12,7 +12,7 @@ Last touched: 2026-07-03
 
 **Procgen tool suite — headless tileset build + biome island generation (`procgen_*`)**
 
-Design: `docs/design/procgen-tools.md` (v2 — water-bottom law + in-house matcher decided). Plan: `docs/design/procgen-tools.plan.md` (6 phases; **0–3 self-contained in this repo, 4–6 gated on the game repo `C:\Users\atk67\Documents\squareds\project1` providing dump hooks**). Same gated loop per phase: implementer → phase-reviewer (opus) → fix/re-review → commit + push. Engine IS reachable here: Godot 4.6.2 at `C:\Users\atk67\Desktop\Godot_v4.6.2-stable_win64.exe` (pass as `GODOT_BIN`, overrides the profile), capsulecastle profile at `C:\Users\atk67\Documents\capsulecastle` (`GODOT_PROJECT`).
+Design: `docs/design/procgen-tools.md` (v2 — water-bottom law + in-house matcher decided). Plan: `docs/design/procgen-tools.plan.md` (6 phases; **0–3 self-contained in this repo, 4–6 gated on the game repo `C:\Users\atk67\Documents\squareds\project1` providing dump hooks**). Same gated loop per phase: implementer (native, sonnet/opus) → phase-reviewer (**codex `gpt-5.5`, standing** — `.gantry/models.json`) → fix/re-review → commit + push. Engine IS reachable here: Godot 4.6.2 at `C:\Users\atk67\Desktop\Godot_v4.6.2-stable_win64.exe` (pass as `GODOT_BIN`, overrides the profile), capsulecastle profile at `C:\Users\atk67\Documents\capsulecastle` (`GODOT_PROJECT`).
 
 **Predecessor DONE:** Feature Batch F–H (Phases 1–6.6) COMPLETE + pushed — `main == origin/main`; full ship detail in SHIPPED.md.
 
