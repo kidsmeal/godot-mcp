@@ -151,6 +151,86 @@ class TestBlob16Tables:
         assert set(table[(3, 3)]) == {"TOP_SIDE", "RIGHT_SIDE", "BOTTOM_SIDE", "LEFT_SIDE"}  # mask 15
 
 
+class TestMinifantasyEdgesTable:
+    """The 3x5 Minifantasy biome edge block. The cell->LAND-corner arrangement
+    was read empirically off the real ForgottenPlains grass-water block (cols
+    25-27, rows 3-7) and confirmed identical on the DesolateDesert block (cols
+    20-22, rows 5-9) — see `_MINIFANTASY_EDGES_LAND_CORNERS`. These lock that
+    reading so a permutation error (which would scramble coastlines even with a
+    clean audit) can never slip in unnoticed."""
+
+    # The empirically-read table (block-relative col,row -> the DIAGONAL corner
+    # bits that are LAND). Duplicated here from the module ON PURPOSE: this is
+    # the spec the visual read produced, so the test must fail if the module's
+    # table is edited to disagree with the eyeball, not silently track it.
+    _EXPECTED = {
+        (0, 0): {"TOP_LEFT_CORNER", "TOP_RIGHT_CORNER", "BOTTOM_LEFT_CORNER"},
+        (1, 0): {"TOP_LEFT_CORNER", "TOP_RIGHT_CORNER"},
+        (2, 0): {"TOP_LEFT_CORNER", "TOP_RIGHT_CORNER", "BOTTOM_RIGHT_CORNER"},
+        (0, 1): {"TOP_LEFT_CORNER", "BOTTOM_LEFT_CORNER"},
+        (1, 1): set(),
+        (2, 1): {"TOP_RIGHT_CORNER", "BOTTOM_RIGHT_CORNER"},
+        (0, 2): {"TOP_LEFT_CORNER", "BOTTOM_LEFT_CORNER", "BOTTOM_RIGHT_CORNER"},
+        (1, 2): {"BOTTOM_LEFT_CORNER", "BOTTOM_RIGHT_CORNER"},
+        (2, 2): {"TOP_RIGHT_CORNER", "BOTTOM_LEFT_CORNER", "BOTTOM_RIGHT_CORNER"},
+        (0, 3): {"TOP_LEFT_CORNER"},
+        (1, 3): {"TOP_RIGHT_CORNER"},
+        (2, 3): {"TOP_LEFT_CORNER", "BOTTOM_RIGHT_CORNER"},
+        (0, 4): {"BOTTOM_LEFT_CORNER"},
+        (1, 4): {"BOTTOM_RIGHT_CORNER"},
+        (2, 4): {"TOP_RIGHT_CORNER", "BOTTOM_LEFT_CORNER"},
+    }
+    _DIAG = {"TOP_LEFT_CORNER", "TOP_RIGHT_CORNER", "BOTTOM_LEFT_CORNER", "BOTTOM_RIGHT_CORNER"}
+
+    def test_has_exactly_15_cells_in_a_3x5_block(self):
+        table = procgen.minifantasy_edges_table()
+        assert len(table) == 15
+        assert {c for (c, _r) in table} == {0, 1, 2}
+        assert {r for (_c, r) in table} == {0, 1, 2, 3, 4}
+
+    def test_every_cell_carries_the_empirically_read_signature(self):
+        """Each of the 15 cells must emit exactly the LAND diagonal corners
+        read off the real sheet — this is the load-bearing cell->signature order
+        that a wrong permutation would scramble."""
+        table = procgen.minifantasy_edges_table()
+        for cell, expected_bits in self._EXPECTED.items():
+            assert set(table[cell]) == expected_bits, f"cell {cell} signature drifted"
+
+    def test_only_diagonal_corner_bits_are_emitted(self):
+        """Square-grid MATCH_CORNERS: only the 4 diagonal corner bits are valid;
+        the axis-aligned TOP_CORNER/... bits must never appear."""
+        for bits in procgen.minifantasy_edges_table().values():
+            assert set(bits) <= self._DIAG
+
+    def test_covers_15_of_16_match_corners_classes_no_duplicates(self):
+        """The pond-ring block hits 15 distinct MATCH_CORNERS classes with no
+        duplicates; the single absent class is the full-interior (all 4 corners
+        land) tile — the exact expectation `procgen_terrain_audit` reports as
+        15 covered / 1 missing for a sheet built with this strategy."""
+        table = procgen.minifantasy_edges_table()
+        sigs = [frozenset(bits) for bits in table.values()]
+        assert len(sigs) == len(set(sigs)) == 15  # no duplicates
+        expected = procgen.expected_signature_set("MATCH_CORNERS")  # all 16 classes
+        covered = set(sigs)
+        missing = expected - covered
+        assert covered <= expected
+        assert missing == {frozenset(self._DIAG)}  # only the all-corners interior is absent
+
+    def test_translated_by_origin_like_the_other_blob_strategies(self):
+        """`_resolve_assign_bits` must translate the block-relative offsets by
+        the terrain_assign's origin, so one table serves every biome sheet at
+        its own atlas position (plains at (25,3), desert at (20,5), ...)."""
+        asn = {"strategy": "minifantasy_edges", "terrain": "grass", "origin": [25, 3]}
+        resolved = procgen._resolve_assign_bits(asn, (25, 3))
+        # 15 tiles, all inside the 3x5 block anchored at (25,3)
+        assert len(resolved) == 15
+        assert set(resolved) == {(25 + c, 3 + r) for c in range(3) for r in range(5)}
+        # block cell (2,3) (TL,BR diagonal) lands at atlas (27, 6)
+        assert set(resolved[(27, 6)]) == {"TOP_LEFT_CORNER", "BOTTOM_RIGHT_CORNER"}
+        # the water-center cell (1,1) at atlas (26,4) carries no bits
+        assert resolved[(26, 4)] == []
+
+
 # --- config validation ------------------------------------------------------
 
 

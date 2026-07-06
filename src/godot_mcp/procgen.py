@@ -201,10 +201,70 @@ def blob16_corners_table(width: int = 4) -> dict[tuple[int, int], list[str]]:
     return table
 
 
+# The Minifantasy biome edge block: a fixed 3-wide x 5-tall = 15-tile
+# CORNER-based (Wang) autotile shared by every Minifantasy biome sheet
+# (ForgottenPlains, DesolateDesert, ... — only the origin, land palette, and
+# animation-frame layout differ per sheet). Each cell depicts which of its 4
+# DIAGONAL corners are LAND (the terrain); off-corner is water. The land-corner
+# set per block cell was read EMPIRICALLY off the real ForgottenPlains
+# grass-water block (cols 25-27, rows 3-7) at high zoom and CONFIRMED
+# pixel-for-pixel identical on the DesolateDesert grass-water block (cols 20-22,
+# rows 5-9), so the arrangement is a shared family constant, not per-pack.
+#
+#   block layout (block-relative col, row) -> LAND diagonal corners:
+#     (0,0) TL,TR,BL   (1,0) TL,TR      (2,0) TL,TR,BR      <- pond top ring
+#     (0,1) TL,BL      (1,1) (none)     (2,1) TR,BR         <- pond side ring + water center
+#     (0,2) TL,BL,BR   (1,2) BL,BR      (2,2) TR,BL,BR      <- pond bottom ring
+#     (0,3) TL         (1,3) TR         (2,3) TL,BR         <- single/diagonal-corner diamonds
+#     (0,4) BL         (1,4) BR         (2,4) TR,BL         <- single/diagonal-corner diamonds
+#
+# The 15 cells cover 15 of the 16 MATCH_CORNERS classes with NO duplicates; the
+# only class absent is the full-interior (all 4 corners land) tile, which a pond
+# ring never depicts. `procgen_terrain_audit` therefore reports 15/16 covered,
+# 1 missing (the all-corners interior) for a sheet built with this strategy —
+# expected, not a defect (the matcher's miss-fallback covers that lone case).
+_MINIFANTASY_EDGES_LAND_CORNERS: dict[tuple[int, int], tuple[str, ...]] = {
+    (0, 0): ("NW", "NE", "SW"),
+    (1, 0): ("NW", "NE"),
+    (2, 0): ("NW", "NE", "SE"),
+    (0, 1): ("NW", "SW"),
+    (1, 1): (),
+    (2, 1): ("NE", "SE"),
+    (0, 2): ("NW", "SW", "SE"),
+    (1, 2): ("SW", "SE"),
+    (2, 2): ("NE", "SW", "SE"),
+    (0, 3): ("NW",),
+    (1, 3): ("NE",),
+    (2, 3): ("NW", "SE"),
+    (0, 4): ("SW",),
+    (1, 4): ("SE",),
+    (2, 4): ("NE", "SW"),
+}
+
+
+def minifantasy_edges_table() -> dict[tuple[int, int], list[str]]:
+    """Map block-relative offset (col, row) -> diagonal corner-bit names for the
+    Minifantasy 3x5 biome edge block under MATCH_CORNERS.
+
+    The 15-cell arrangement is a fixed family constant
+    (`_MINIFANTASY_EDGES_LAND_CORNERS`, read off the real ForgottenPlains and
+    DesolateDesert sheets — see that dict's comment). Offsets are block-relative
+    (cols 0-2, rows 0-4); `_resolve_assign_bits` translates them by the
+    terrain_assign's `origin` so one table serves every biome sheet at its own
+    atlas position. Bit names are the same DIAGONAL `_CORNER_BITS` the S1 matcher
+    and `blob16_corners` use, never the axis-aligned hex/iso CORNER bits.
+    """
+    return {
+        (col, row): [_CORNER_BITS[c] for c in corners]
+        for (col, row), corners in _MINIFANTASY_EDGES_LAND_CORNERS.items()
+    }
+
+
 _STRATEGY_TABLES = {
     "blob47": blob47_table,
     "blob16_sides": blob16_sides_table,
     "blob16_corners": blob16_corners_table,
+    "minifantasy_edges": minifantasy_edges_table,
 }
 
 # All 8 CellNeighbor bit names this module knows about (sides + diagonal
@@ -337,7 +397,10 @@ def validate_config(cfg: dict) -> dict:
     # Terrain assignments: strategy known, atlas + terrain resolve.
     for asn in cfg.get("terrain_assign") or []:
         strat = asn.get("strategy")
-        _require(strat in ("blob47", "blob16_sides", "blob16_corners", "explicit"), f"terrain_assign: unknown strategy {strat!r}")
+        _require(
+            strat in ("blob47", "blob16_sides", "blob16_corners", "minifantasy_edges", "explicit"),
+            f"terrain_assign: unknown strategy {strat!r}",
+        )
         _require(asn.get("atlas") in atlas_ids, f"terrain_assign references unknown atlas {asn.get('atlas')!r}")
         _require(asn.get("terrain") in terrain_names, f"terrain_assign references unknown terrain {asn.get('terrain')!r}")
         if strat == "explicit":
