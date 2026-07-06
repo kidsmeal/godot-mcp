@@ -364,6 +364,25 @@ def procgen_terrain_audit(tileset_path: str, terrain_set: int = -1) -> str:
     return procgen.terrain_audit(tileset_path, terrain_set)
 
 
+@mcp.tool(structured_output=False)
+def procgen_atlas_grid(sheet_path: str, tile_size: int = 8, scale: int = 6, region: str = "") -> str | list:
+    """Render a tilesheet upscaled with a per-tile coordinate grid overlay, so
+    tile coordinates (plain tile, variants, edge-block origin) can be read off
+    for procgen configs on any sheet, without hunting. Pure Pillow — no
+    headless Godot involved, unlike the other procgen_* tools.
+
+    sheet_path is a project-relative res:// path to an IMPORTED PNG. tile_size
+    is px per tile (default 8). scale is the upscale factor (default 6). region
+    is an optional tile-coord crop window "col0:col1,row0:row1" (col1/row1
+    exclusive, e.g. "25:32,3:8" = cols 25-31, rows 3-7); empty = whole sheet.
+
+    Returns [summary_text, image] — real MCP image content plus a short text
+    summary (sheet pixel dims, tile-grid size, tile_size/scale, region if
+    cropped). Bad path / missing file / not-a-PNG / malformed region all come
+    back as a single clear error string instead of an image."""
+    return procgen.atlas_grid(sheet_path, tile_size, scale, region)
+
+
 def main() -> None:
     mcp.run()
 

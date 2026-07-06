@@ -43,7 +43,12 @@ from __future__ import annotations
 import json
 import secrets
 import tomllib
+from io import BytesIO
 from pathlib import Path
+
+from mcp.server.fastmcp import Image as MCPImage
+from PIL import Image as PILImage
+from PIL import ImageDraw
 
 from godot_mcp import config, runner
 
@@ -1700,3 +1705,174 @@ def terrain_audit(tileset_path: str, terrain_set: int = -1, timeout: int = 60) -
 
     report = _audit_report(payload, terrain_set)
     return _format_audit_report(report, ts_path_res)
+
+
+# ---------------------------------------------------------------------------
+# atlas_grid — pure-PIL tile-coordinate grid overlay (no headless Godot)
+# ---------------------------------------------------------------------------
+#
+# Unlike every other procgen_* tool, this one never touches Godot: it loads
+# the imported PNG straight off disk and renders with Pillow. Reuses the
+# render approach spiked in the session scratchpad (annotate.py / crop_zoom.py):
+# checkerboard-composite for transparency, NEAREST upscale, per-tile gridlines
+# (accent every 5th line), yellow column/row index labels, optional tile-coord
+# crop window.
+
+_ATLAS_GRID_MARGIN = 26
+_ATLAS_GRID_ACCENT_EVERY = 5
+
+
+class AtlasGridError(ValueError):
+    """A procgen_atlas_grid request failed validation (reported, not raised)."""
+
+
+def parse_region(region: str) -> tuple[int, int, int, int] | None:
+    """Parse a `"col0:col1,row0:row1"` tile-coord crop window (col1/row1
+    exclusive, matching Python slice semantics — `"25:32,3:8"` means cols
+    25-31, rows 3-7). Returns (col0, col1, row0, row1), or raises
+    AtlasGridError with a clear message on any malformed input. An empty
+    string is not valid input here — callers check for "" (whole sheet)
+    before calling this.
+    """
+    parts = region.split(",")
+    if len(parts) != 2:
+        raise AtlasGridError(f"region must be 'col0:col1,row0:row1', got {region!r}")
+    try:
+        col_part, row_part = parts
+        c0s, c1s = col_part.split(":")
+        r0s, r1s = row_part.split(":")
+        col0, col1, row0, row1 = int(c0s), int(c1s), int(r0s), int(r1s)
+    except ValueError as e:
+        raise AtlasGridError(f"region must be 'col0:col1,row0:row1' with integer bounds, got {region!r}") from e
+    if col0 < 0 or row0 < 0 or col1 <= col0 or row1 <= row0:
+        raise AtlasGridError(
+            f"region bounds must satisfy 0 <= col0 < col1 and 0 <= row0 < row1, got {region!r}"
+        )
+    return col0, col1, row0, row1
+
+
+def _render_atlas_grid(
+    im: PILImage.Image, tile_size: int, scale: int, crop: tuple[int, int, int, int] | None
+) -> tuple[PILImage.Image, int, int, int, int]:
+    """Render the annotated grid image. Returns (canvas, cols, rows, col0, row0)
+    where cols/rows is the rendered tile-grid size and col0/row0 is the crop
+    window's origin (0, 0 for a full-sheet render) — used for row/col labels.
+    """
+    if crop is not None:
+        col0, col1, row0, row1 = crop
+        box = (col0 * tile_size, row0 * tile_size, col1 * tile_size, row1 * tile_size)
+        im = im.crop(box)
+    else:
+        col0, row0 = 0, 0
+
+    cw, ch = im.size
+    cols, rows = cw // tile_size, ch // tile_size
+
+    bg = PILImage.new("RGBA", (cw, ch), (0, 0, 0, 0))
+    for ty in range(rows):
+        for tx in range(cols):
+            c = (55, 55, 55, 255) if (tx + ty) % 2 else (95, 95, 95, 255)
+            bg.paste(c, (tx * tile_size, ty * tile_size, (tx + 1) * tile_size, (ty + 1) * tile_size))
+    composited = PILImage.alpha_composite(bg, im)
+
+    up = composited.resize((cw * scale, ch * scale), PILImage.Resampling.NEAREST)
+    margin = _ATLAS_GRID_MARGIN
+    canvas = PILImage.new("RGBA", (up.width + margin, up.height + margin), (20, 20, 20, 255))
+    canvas.paste(up, (margin, margin))
+    d = ImageDraw.Draw(canvas)
+    for tx in range(cols + 1):
+        x = margin + tx * tile_size * scale
+        accent = (col0 + tx) % _ATLAS_GRID_ACCENT_EVERY == 0
+        d.line([(x, margin), (x, canvas.height)], fill=(255, 80, 80, 255) if accent else (255, 255, 255, 70), width=1)
+        if tx < cols:
+            d.text((x + 2, 4), str(col0 + tx), fill=(230, 230, 120, 255))
+    for ty in range(rows + 1):
+        y = margin + ty * tile_size * scale
+        accent = (row0 + ty) % _ATLAS_GRID_ACCENT_EVERY == 0
+        d.line([(margin, y), (canvas.width, y)], fill=(255, 80, 80, 255) if accent else (255, 255, 255, 70), width=1)
+        if ty < rows:
+            d.text((3, y + 2), str(row0 + ty), fill=(230, 230, 120, 255))
+
+    return canvas, cols, rows, col0, row0
+
+
+def atlas_grid(sheet_path: str, tile_size: int = 8, scale: int = 6, region: str = "") -> str | list:
+    """Render a tilesheet upscaled with a per-tile coordinate grid overlay, so
+    tile coordinates (plain tile, variant, edge-block origin) can be read off
+    directly for procgen configs (`terrain_assign.origin`, `interior` cells,
+    `animation.base_region`, etc.) on any sheet, without hunting.
+
+    sheet_path is a project-relative res:// path to an IMPORTED PNG (e.g.
+    res://assets/biomes/plains/Minifantasy_ForgottenPlainsTiles.png).
+    tile_size is px per tile (default 8, the game's tile size). scale is the
+    upscale factor (default 6 -> 8px tiles render at 48px, readable). region
+    is an optional tile-coord crop window "col0:col1,row0:row1" (col1/row1
+    exclusive, e.g. "25:32,3:8" = cols 25-31, rows 3-7); empty = whole sheet.
+
+    Pure Pillow — no headless Godot involved (unlike every other procgen_*
+    tool). Renders: checkerboard composite so transparent cells are visible,
+    NEAREST upscale (crisp pixel edges), per-tile gridlines (every 5th line
+    accented red), and yellow column/row index labels along the top/left.
+
+    Returns a list `[summary_text, Image]` so the image is delivered as real
+    MCP image content (FastMCP's `Image` helper, converted to `ImageContent`
+    by the tool-call machinery) — the agent/user SEES the rendered grid, not
+    just a path. summary_text reports sheet pixel dims, tile-grid size
+    (cols x rows), tile_size/scale used, and the region if cropped.
+
+    Never raises: bad path / missing file / not-a-PNG / malformed region all
+    return a single clear error string (mcp discipline) instead of an image.
+    """
+    try:
+        resolved = config.resolve_project_path(sheet_path)
+    except config.PathEscapeError:
+        return f"Refused: {sheet_path} resolves outside the project root."
+    if not resolved.is_file():
+        return f"Not found: {sheet_path}"
+    if tile_size <= 0:
+        return f"ERROR — tile_size must be a positive integer, got {tile_size}"
+    if scale <= 0:
+        return f"ERROR — scale must be a positive integer, got {scale}"
+
+    crop: tuple[int, int, int, int] | None = None
+    if region:
+        try:
+            crop = parse_region(region)
+        except AtlasGridError as e:
+            return f"ERROR — invalid region: {e}"
+
+    try:
+        opened = PILImage.open(resolved)
+        opened.load()
+    except Exception as e:
+        return f"ERROR — could not open {sheet_path} as an image: {e}"
+    if opened.format != "PNG":
+        return f"ERROR — expected a PNG, got {opened.format}"
+    im = opened.convert("RGBA")
+
+    w, h = im.size
+    sheet_cols, sheet_rows = w // tile_size, h // tile_size
+
+    if crop is not None:
+        _col0, col1, _row0, row1 = crop
+        if col1 > sheet_cols or row1 > sheet_rows:
+            return (
+                f"ERROR — region {region!r} exceeds the sheet's tile grid "
+                f"({sheet_cols}x{sheet_rows} tiles at tile_size={tile_size})"
+            )
+
+    canvas, cols, rows, _col0, _row0 = _render_atlas_grid(im, tile_size, scale, crop)
+
+    lines = [
+        f"Atlas grid: {sheet_path}",
+        f"  sheet: {w}x{h}px  tile grid: {sheet_cols}x{sheet_rows} tiles (tile_size={tile_size})",
+        f"  scale: {scale}x  rendered: {canvas.width}x{canvas.height}px",
+    ]
+    if crop is not None:
+        col0c, col1c, row0c, row1c = crop
+        lines.append(f"  region: cols {col0c}-{col1c - 1}, rows {row0c}-{row1c - 1} ({cols}x{rows} tiles)")
+    summary = "\n".join(lines)
+
+    buf = BytesIO()
+    canvas.convert("RGB").save(buf, format="PNG")
+    return [summary, MCPImage(data=buf.getvalue(), format="png")]

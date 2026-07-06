@@ -4,7 +4,7 @@ version = "0.1.0"
 description = "Version-exact Godot API + project-convention grounding MCP server"
 license = "MIT"
 requires-python = ">=3.11"
-dependencies = ["mcp>=1.12", "gdtoolkit>=4.5"]
+dependencies = ["mcp>=1.12", "gdtoolkit>=4.5", "pillow>=10"]
 
 [project.optional-dependencies]
 dev = ["pytest", "ruff", "mypy"]
