@@ -353,3 +353,128 @@ scan = "all"
         # separation is nonzero).
         assert "tiles: 6" in result, result
         assert "reload check: 6 tiles" in result, result
+
+
+@pytest.mark.skipif(not _godot_available, reason="Godot binary not resolvable on this machine")
+class TestTilesetBuildNonAdjacentAnimation:
+    """The load-bearing new capability: a 2-frame animated tile whose frame 1 is
+    NON-adjacent (frame_offset [3,0], a 2-cell gap). The builder must translate
+    that offset into Godot's tile-animation SEPARATION so frame 1 points at the
+    +3-col cell, reserve that cell (never register it as its own tile), and the
+    real proof runs in a FRESH engine reloading the saved .tres.
+
+    Fixture atlas (8x8 tiles, 4 cols x 1 row = 32x8 px):
+      col 0 = animation BASE (frame 0), col 3 = its frame 1 (the +3 offset).
+      cols 1-2 are the 2-cell GAP (transparent) — RESERVED, never scanned as
+      standalone tiles. So a non_transparent scan creates exactly 1 tile (the
+      animated base) and reserves 1 frame region.
+    """
+
+    @pytest.fixture()
+    def tmp_project(self, tmp_path_factory, monkeypatch):
+        proj = tmp_path_factory.mktemp("procgen_anim_proj")
+        (proj / "project.godot").write_text(
+            'config_version=5\n\n[application]\nconfig/name="ProcgenAnimFixture"\n',
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(config, "PROJECT_ROOT", proj)
+        return proj
+
+    # Frame 0 at grid col 0, frame 1 at grid col 3 (the +3 non-adjacent offset);
+    # cols 1-2 stay transparent (the gap). Distinct colors so a wrong region
+    # would be visible, though the reload asserts the region rect directly.
+    _MAKE_FIXTURE = r"""extends SceneTree
+func _initialize() -> void:
+	var img := Image.create(32, 8, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	_fill_cell(img, 0, Color(0.1, 0.3, 0.7, 1.0))  # frame 0
+	_fill_cell(img, 3, Color(0.1, 0.3, 0.9, 1.0))  # frame 1 (+3 cols)
+	var err := img.save_png(OS.get_environment("PROCGEN_FIXTURE_OUT"))
+	print("FIXTURE_SAVE_RC=" + str(err))
+	quit(0)
+
+func _fill_cell(img: Image, gx: int, col: Color) -> void:
+	for py in range(8):
+		for px in range(8):
+			img.set_pixel(gx * 8 + px, py, col)
+"""
+
+    def _make_fixture_atlas(self, proj: Path, monkeypatch) -> str:
+        art = proj / "art"
+        art.mkdir(parents=True, exist_ok=True)
+        out_png = art / "anim.png"
+        monkeypatch.setenv("PROCGEN_FIXTURE_OUT", str(out_png))
+        r = runner.run_temp_probe(self._MAKE_FIXTURE, timeout=60)
+        assert r.get("rc") == 0, f"fixture generation failed: {r}"
+        assert out_png.exists(), f"fixture PNG not written: {r.get('out')}"
+        return "res://art/anim.png"
+
+    def test_non_adjacent_frame_survives_reload_at_the_offset_cell(self, tmp_project, tmp_path, monkeypatch):
+        texture_res = self._make_fixture_atlas(tmp_project, monkeypatch)
+        cfg = f"""
+[tileset]
+tile_size = [8, 8]
+
+[[atlas]]
+id = "water"
+texture = "{texture_res}"
+scan = "non_transparent"
+
+[[animation]]
+atlas = "water"
+base_region = [[0, 0], [0, 0]]
+frames = 2
+frame_offset = [3, 0]
+duration = 0.5
+mode = "default"
+"""
+        p = tmp_path / "anim.toml"
+        p.write_text(cfg, encoding="utf-8")
+
+        result = procgen.tileset_build(str(p), "res://tilesets/anim.tres")
+        assert result.startswith("OK"), f"build did not succeed:\n{result}"
+        # Exactly 1 tile (the animated base); the +3 frame cell is reserved, and
+        # the 2 gap cells are transparent — none become standalone tiles.
+        assert "tiles: 1" in result, result
+        assert "animated groups: 1" in result, result
+        assert "1 reserved frame regions" in result, result
+        assert "reload check: 1 tiles" in result, result
+
+        tres = tmp_project / "tilesets" / "anim.tres"
+        assert tres.exists()
+
+        # The real proof: reload the saved .tres in a FRESH engine and assert the
+        # tile carries 2 frames, the expected separation (frame_offset-1 = (2,0)),
+        # DEFAULT mode, that frame 1's texture region points at the NON-ADJACENT
+        # cell (base + [3,0] = pixel (24,0)), and that the frame-1 cell (3,0) was
+        # NOT created as its own tile.
+        dump = r"""extends SceneTree
+func _initialize() -> void:
+	var ts := ResourceLoader.load("res://tilesets/anim.tres", "TileSet", ResourceLoader.CACHE_MODE_IGNORE) as TileSet
+	var src := ts.get_source(ts.get_source_id(0)) as TileSetAtlasSource
+	var base := Vector2i(0, 0)
+	print("FRAMES=" + str(src.get_tile_animation_frames_count(base)))
+	print("SEP=" + str(src.get_tile_animation_separation(base)))
+	print("MODE=" + str(src.get_tile_animation_mode(base)))
+	print("MODE_DEFAULT=" + str(TileSetAtlasSource.TILE_ANIMATION_MODE_DEFAULT))
+	print("REGION0=" + str(src.get_tile_texture_region(base, 0)))
+	print("REGION1=" + str(src.get_tile_texture_region(base, 1)))
+	print("HAS_FRAME_TILE=" + str(src.has_tile(Vector2i(3, 0))))
+	print("TILE_COUNT=" + str(src.get_tiles_count()))
+	quit(0)
+"""
+        r = runner.run_temp_probe(dump, timeout=60)
+        out = r.get("out") or ""
+        assert "FRAMES=2" in out, out
+        # separation = frame_offset - 1 tile = (3,0) - (1,0) = (2,0)
+        assert "SEP=(2, 0)" in out, out
+        # DEFAULT mode (coastline water sync). MODE prints the int; assert it
+        # equals the engine's DEFAULT enum value printed alongside.
+        assert "MODE=0" in out and "MODE_DEFAULT=0" in out, out
+        # frame 0 region at pixel (0,0), frame 1 region at the +3-col cell
+        # (pixel (24,0)) — the non-adjacent placement, not an adjacent (8,0).
+        assert "REGION0=[P: (0, 0), S: (8, 8)]" in out, out
+        assert "REGION1=[P: (24, 0), S: (8, 8)]" in out, out
+        # the frame-1 cell is a frame region, NOT a standalone tile
+        assert "HAS_FRAME_TILE=false" in out, out
+        assert "TILE_COUNT=1" in out, out

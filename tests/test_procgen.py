@@ -504,16 +504,56 @@ class TestConfigValidation:
         ]
         procgen.validate_config(cfg)
 
-    def test_non_contiguous_frame_offset_rejected(self):
-        """P1-review carry-in: validate_config is the SOLE source of truth for
-        the frame_offset contiguity rule (compose_build_script no longer
-        re-checks it). A diagonal/other offset must still be rejected here."""
+    def test_diagonal_frame_offset_rejected(self):
+        """validate_config is the SOLE source of truth for the frame_offset
+        layout rule (compose_build_script no longer re-checks it). A two-axis
+        (diagonal) offset has no single-line Godot layout and must be rejected —
+        frames lay out in a line, not diagonally."""
         cfg = _min_cfg()
         cfg["animation"] = [
             {"atlas": "ground", "base_region": [[0, 0], [0, 0]], "frames": 2, "frame_offset": [1, 1]}
         ]
-        with pytest.raises(procgen.ConfigError, match="frame_offset must be"):
+        with pytest.raises(procgen.ConfigError, match="exactly one axis"):
             procgen.validate_config(cfg)
+
+    def test_noncontiguous_horizontal_frame_offset_validates(self):
+        """The load-bearing change: a NON-adjacent horizontal frame_offset (a
+        gap between base and frame 1, the Minifantasy water case) now validates
+        — Godot's tile-animation separation places frame N at base+N*offset, so
+        frames need not be adjacent."""
+        cfg = _min_cfg()
+        cfg["animation"] = [
+            {"atlas": "ground", "base_region": [[0, 0], [0, 0]], "frames": 2, "frame_offset": [4, 0]}
+        ]
+        procgen.validate_config(cfg)  # must not raise
+
+    def test_noncontiguous_vertical_frame_offset_validates(self):
+        cfg = _min_cfg()
+        cfg["animation"] = [
+            {"atlas": "ground", "base_region": [[0, 0], [0, 0]], "frames": 3, "frame_offset": [0, 3]}
+        ]
+        procgen.validate_config(cfg)  # must not raise
+
+    def test_zero_frame_offset_rejected(self):
+        """A [0,0] offset stacks every frame on the base cell (no line) and is
+        rejected as not positive along either axis."""
+        cfg = _min_cfg()
+        cfg["animation"] = [
+            {"atlas": "ground", "base_region": [[0, 0], [0, 0]], "frames": 2, "frame_offset": [0, 0]}
+        ]
+        with pytest.raises(procgen.ConfigError, match="exactly one axis"):
+            procgen.validate_config(cfg)
+
+    def test_negative_frame_offset_rejected(self):
+        """A negative step (e.g. [-1,0]) would place frame regions off the left
+        of the base and is rejected — the axis step must be positive."""
+        for bad in ([-1, 0], [0, -2], [-3, 0]):
+            cfg = _min_cfg()
+            cfg["animation"] = [
+                {"atlas": "ground", "base_region": [[0, 0], [0, 0]], "frames": 2, "frame_offset": bad}
+            ]
+            with pytest.raises(procgen.ConfigError, match="exactly one axis"):
+                procgen.validate_config(cfg)
 
     def test_unknown_terrain_assign_atlas_errors(self):
         cfg = _min_cfg()
@@ -786,6 +826,69 @@ class TestComposeBuildScript:
         src = procgen.compose_build_script(cfg, "res://o.tres", "n3")
         assert "2,3" in src
         assert "TOP_SIDE" in src
+
+    def test_script_calls_set_tile_animation_separation(self):
+        """The GDScript must set the per-tile animation separation (the whole
+        point of non-adjacent frames). A missing call would silently place
+        frames adjacent regardless of the offset."""
+        cfg = _min_cfg()
+        cfg["animation"] = [
+            {"atlas": "ground", "base_region": [[0, 0], [0, 0]], "frames": 2, "frame_offset": [4, 0], "mode": "random_start"}
+        ]
+        cfg = procgen.validate_config(cfg)
+        src = procgen.compose_build_script(cfg, "res://o.tres", "nsep")
+        assert "set_tile_animation_separation" in src
+
+
+class TestComposeAnimationSeparation:
+    """frame_offset -> separation translation in the resolved plan. Godot places
+    frame N at base + N*(size + separation) with size = 1 grid tile, so a
+    frame_offset of K tiles per frame maps to separation = K - 1 along the
+    animation axis, and columns matches the single-line strip direction."""
+
+    def _anim_plan(self, frame_offset, frames=2, base=(0, 0)) -> dict:
+        cfg = _min_cfg()
+        cfg["animation"] = [
+            {
+                "atlas": "ground",
+                "base_region": [list(base), list(base)],
+                "frames": frames,
+                "frame_offset": list(frame_offset),
+                "mode": "random_start",
+            }
+        ]
+        cfg = procgen.validate_config(cfg)
+        plan = _plan_from_source(procgen.compose_build_script(cfg, "res://o.tres", "na"))
+        return plan["atlases"][0]["animations"][0]
+
+    def test_horizontal_offset_4_maps_to_separation_3(self):
+        """The Minifantasy water case: frame_offset [4,0] -> separation (3,0),
+        so frame 1 lands at base + 4 cols (empirically verified on 4.7)."""
+        anim = self._anim_plan([4, 0])
+        assert anim["separation"] == [3, 0]
+        assert anim["columns"] == 2  # horizontal strip reads left-to-right
+
+    def test_adjacent_horizontal_offset_1_maps_to_zero_separation(self):
+        """The back-compat contiguous case: frame_offset [1,0] -> separation
+        (0,0) (frames adjacent), columns = frames."""
+        anim = self._anim_plan([1, 0])
+        assert anim["separation"] == [0, 0]
+        assert anim["columns"] == 2
+
+    def test_vertical_offset_3_maps_to_separation_2_columns_1(self):
+        """A vertical strip (fy>0, fx==0) reads top-to-bottom: columns = 1,
+        separation = [0, fy-1]."""
+        anim = self._anim_plan([0, 3])
+        assert anim["separation"] == [0, 2]
+        assert anim["columns"] == 1
+
+    def test_reserved_cells_follow_the_offset_not_a_hardcoded_plus_one(self):
+        """The scanner reserves base + N*frame_offset for N in 1..frames-1, so a
+        3-frame [4,0] animation reserves cols 4 and 8 (NOT 1 and 2). Those cells
+        must never be created as standalone tiles."""
+        anim = self._anim_plan([4, 0], frames=3, base=(0, 0))
+        assert anim["base_cells"] == [[0, 0]]
+        assert anim["reserved"] == [[4, 0], [8, 0]]
 
 
 def _plan_from_source(src: str) -> dict:

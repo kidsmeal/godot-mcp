@@ -537,11 +537,20 @@ def validate_config(cfg: dict) -> dict:
 
         mode = an.get("mode", "default")
         _require(mode in ("default", "random_start"), f"animation mode must be 'default' or 'random_start' (got {mode!r})")
-        # Godot tile animation only supports contiguous horizontal or vertical
-        # frame strips (see compose_build_script). Reject other offsets early.
+        # Godot lays animation frames in a single line (horizontal or vertical
+        # strip). Frames need NOT be adjacent: `set_tile_animation_separation`
+        # (a grid-tile margin between frames, verified against 4.7 — see
+        # compose_build_script) places frame N at base + N*frame_offset. So
+        # frame_offset is a positive step along EXACTLY ONE axis with the other
+        # axis zero — e.g. [4,0] (frame 1 four cols right, a 3-cell gap) or
+        # [0,3] (three rows down). A two-axis (diagonal), zero, or negative
+        # offset has no single-line Godot layout and is rejected here.
+        fx, fy = fo
+        single_axis_positive = (fx > 0 and fy == 0) or (fy > 0 and fx == 0)
         _require(
-            (fo == [1, 0]) or (fo == [0, 1]),
-            f"animation on atlas {aid!r}: frame_offset must be [1,0] (horizontal) or [0,1] (vertical); got {fo}",
+            single_axis_positive,
+            f"animation on atlas {aid!r}: frame_offset must be positive along exactly one axis "
+            f"(horizontal like [4,0] or vertical like [0,3]) with the other axis zero; got {fo}",
         )
         if mode != "default":
             terrain_cells = terrain_cells_by_atlas.get(aid, set())
@@ -791,22 +800,29 @@ def compose_build_script(cfg: dict, out_path_res: str, nonce: str) -> str:
                     base_cells.append([bx, by])
                     for f in range(1, frames):
                         reserved.append([bx + f * fx, by + f * fy])
-            # Godot lays animation frames out left-to-right, top-to-bottom in a
-            # rectangle of `columns` width, contiguous from the base coords, so
-            # set_tile_animation_columns must MATCH the reserved layout: a
-            # horizontal strip (frame_offset [1,0]) => columns = frames; a
-            # vertical strip (frame_offset [0,1]) => columns = 1. The contiguity
-            # rule itself (offset must be [1,0] or [0,1]) is validated ONCE in
-            # validate_config — this is the single source of truth (P1 review
-            # carry-in); by the time a cfg reaches this function it has already
-            # passed that check, so only the vertical case needs branching here.
-            columns = 1 if (fx == 0 and fy == 1) else frames
+            # Godot lays animation frames in a single line and places frame N at
+            #   base + N*(size + separation)   [size is 1 grid tile per frame]
+            # so a `frame_offset` of N tiles per frame maps to a per-frame
+            # `separation` (grid-tile MARGIN between frames) of frame_offset - 1
+            # along the animation axis (empirically verified on 4.7: tile_size 8,
+            # separation (3,0) -> frame 1 region at pixel 32 == grid cell base+4,
+            # i.e. frame_offset [4,0]). Frames therefore need NOT be adjacent.
+            # `columns` must match the single-line layout: a horizontal strip
+            # (fx>0, fy==0) reads left-to-right so columns = frames; a vertical
+            # strip (fy>0, fx==0) reads top-to-bottom so columns = 1. The
+            # single-axis-positive rule is validated ONCE in validate_config
+            # (single source of truth, P1-review carry-in), so by here fx/fy is a
+            # positive step on exactly one axis.
+            horizontal = fx > 0
+            columns = frames if horizontal else 1
+            sep = [fx - 1, 0] if horizontal else [0, fy - 1]
             atlas_plan["animations"].append(
                 {
                     "base_cells": base_cells,
                     "reserved": reserved,
                     "frames": frames,
                     "columns": columns,
+                    "separation": sep,
                     "duration": an.get("duration", 1.0),
                     "mode": "TILE_ANIMATION_MODE_DEFAULT" if an.get("mode", "default") == "default" else "TILE_ANIMATION_MODE_RANDOM_START_TIMES",
                 }
@@ -961,18 +977,36 @@ func _build(warnings: Array) -> Dictionary:
 \t\tvar made := 0
 \t\tvar animated := 0
 \t\tfor coords in cells_to_make:
-\t\t\tif not src.has_room_for_tile(coords, Vector2i.ONE, 1, Vector2i.ZERO, 1, Vector2i(-1, -1)):
+\t\t\tvar bk := _cell_key(coords.x, coords.y)
+\t\t\tvar is_base := base_cells.has(bk)
+\t\t\t# Room check must account for the animation layout: an animated base
+\t\t\t# spans `frames` frame regions at `columns`/`separation`, so it needs
+\t\t\t# room for all of them (a non-adjacent frame_offset reaches further
+\t\t\t# across the sheet). A static tile is the 1-frame/1-column/no-separation
+\t\t\t# case. `create_tile` only takes (coords, size); the animation layout is
+\t\t\t# applied right after via set_tile_animation_columns/separation/
+\t\t\t# frames_count (columns + separation BEFORE frames_count so Godot
+\t\t\t# reserves the frame regions at the right stride).
+\t\t\tvar r_columns := 1
+\t\t\tvar r_frames := 1
+\t\t\tvar r_sep := Vector2i.ZERO
+\t\t\tvar anim: Dictionary = {{}}
+\t\t\tif is_base:
+\t\t\t\tanim = base_cells[bk]
+\t\t\t\tr_columns = int(anim["columns"])
+\t\t\t\tr_frames = int(anim["frames"])
+\t\t\t\tr_sep = Vector2i(int(anim["separation"][0]), int(anim["separation"][1]))
+\t\t\tif not src.has_room_for_tile(coords, Vector2i.ONE, r_columns, r_sep, r_frames, Vector2i(-1, -1)):
 \t\t\t\twarnings.append("no room for tile at " + str(coords) + " in atlas " + str(atlas_plan["id"]))
 \t\t\t\tcontinue
 \t\t\tsrc.create_tile(coords)
 \t\t\tmade += 1
-\t\t\tvar bk := _cell_key(coords.x, coords.y)
-\t\t\tif base_cells.has(bk):
-\t\t\t\tvar anim: Dictionary = base_cells[bk]
-\t\t\t\tsrc.set_tile_animation_columns(coords, int(anim["columns"]))
-\t\t\t\tsrc.set_tile_animation_frames_count(coords, int(anim["frames"]))
+\t\t\tif is_base:
+\t\t\t\tsrc.set_tile_animation_columns(coords, r_columns)
+\t\t\t\tsrc.set_tile_animation_separation(coords, r_sep)
+\t\t\t\tsrc.set_tile_animation_frames_count(coords, r_frames)
 \t\t\t\tsrc.set_tile_animation_mode(coords, _anim_mode(anim["mode"]))
-\t\t\t\tfor f in range(int(anim["frames"])):
+\t\t\t\tfor f in range(r_frames):
 \t\t\t\t\tsrc.set_tile_animation_frame_duration(coords, f, float(anim["duration"]))
 \t\t\t\tanimated += 1
 
