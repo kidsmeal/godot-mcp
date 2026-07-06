@@ -374,6 +374,35 @@ func _fill_cell(img: Image, gx: int, gy: int, col: Color) -> void:
 """
 
 
+# Same 3x5 block as above, WIDENED to 5 cols x 5 rows (40x40 px) so cols 3-4 hold
+# solid-ground fill cells the `interior` param can name. Only cols 3-4 of row 0
+# are painted opaque as interior fill; the rest stays transparent. The interior
+# test builds with scan='non_transparent', so only the 15 edge cells + the 2
+# interior fill cells are created (17 tiles) — the transparent cells are skipped.
+_MAKE_MINIFANTASY_INTERIOR_FIXTURE = r"""extends SceneTree
+func _initialize() -> void:
+	var w := 40
+	var h := 40
+	var img := Image.create(w, h, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	for gy in range(5):
+		for gx in range(3):
+			var c := Color(0.3, 0.6, 0.2, 1.0) if (gx + gy) % 2 == 0 else Color(0.25, 0.5, 0.18, 1.0)
+			_fill_cell(img, gx, gy, c)
+	# two distinct solid-ground fill cells (interior) at (3,0) and (4,0)
+	_fill_cell(img, 3, 0, Color(0.32, 0.62, 0.22, 1.0))
+	_fill_cell(img, 4, 0, Color(0.28, 0.58, 0.2, 1.0))
+	var err := img.save_png(OS.get_environment("PROCGEN_FIXTURE_OUT"))
+	print("FIXTURE_SAVE_RC=" + str(err))
+	quit(0)
+
+func _fill_cell(img: Image, gx: int, gy: int, col: Color) -> void:
+	for py in range(8):
+		for px in range(8):
+			img.set_pixel(gx * 8 + px, gy * 8 + py, col)
+"""
+
+
 @pytest.mark.skipif(not _godot_available, reason="Godot binary not resolvable on this machine")
 class TestMinifantasyEdgesStrategyGolden:
     """Committed, fully-offline-reproducible coverage for the parameterized
@@ -407,6 +436,16 @@ class TestMinifantasyEdgesStrategyGolden:
         assert out_png.exists(), f"fixture PNG not written: {r.get('out')}"
         return "res://art/mf_block.png"
 
+    def _make_interior_fixture_atlas(self, proj: Path, monkeypatch) -> str:
+        art = proj / "art"
+        art.mkdir(parents=True, exist_ok=True)
+        out_png = art / "mf_block_interior.png"
+        monkeypatch.setenv("PROCGEN_FIXTURE_OUT", str(out_png))
+        r = runner.run_temp_probe(_MAKE_MINIFANTASY_INTERIOR_FIXTURE, timeout=60)
+        assert r.get("rc") == 0, f"fixture generation failed: {r}"
+        assert out_png.exists(), f"fixture PNG not written: {r.get('out')}"
+        return "res://art/mf_block_interior.png"
+
     def _config(self, tmp_path: Path, texture_res: str) -> str:
         """strategy='minifantasy_edges' on the synthetic 3x5 block. The fixture
         atlas is exactly 3 cells wide, so the block sits at origin [0,0] here;
@@ -432,6 +471,36 @@ terrain = "grass"
 origin = [0, 0]
 """
         p = tmp_path / "minifantasy.toml"
+        p.write_text(cfg, encoding="utf-8")
+        return str(p)
+
+    def _config_with_interior(self, tmp_path: Path, texture_res: str) -> str:
+        """strategy='minifantasy_edges' plus the `interior` param naming two
+        solid-ground fill cells OUTSIDE the 3x5 block (cols 3-4, row 0 on the
+        widened fixture). Each interior cell carries the all-4-corners signature,
+        so the sheet now covers 16/16 and the two interior cells report as
+        variants of the full-interior class."""
+        cfg = f"""
+[tileset]
+tile_size = [8, 8]
+
+[[atlas]]
+id = "ground"
+texture = "{texture_res}"
+scan = "non_transparent"
+
+[[terrain_set]]
+mode = "match_corners"
+terrains = [ {{ name = "grass", color = "#4c8f3c" }} ]
+
+[[terrain_assign]]
+atlas = "ground"
+strategy = "minifantasy_edges"
+terrain = "grass"
+origin = [0, 0]
+interior = [[3, 0], [4, 0]]
+"""
+        p = tmp_path / "minifantasy_interior.toml"
         p.write_text(cfg, encoding="utf-8")
         return str(p)
 
@@ -469,3 +538,38 @@ origin = [0, 0]
         assert [t["coords"] for t in diag] == [[2, 3]], diag
         center = sigs[""]
         assert [t["coords"] for t in center] == [[1, 1]], center
+
+    def test_interior_param_takes_block_to_full_16_of_16(self, tmp_project, tmp_path, monkeypatch):
+        """The `interior` param supplies the full-interior all-4-corners class the
+        15-cell pond block omits. A minifantasy_edges build WITH two interior fill
+        cells must audit 16/16, 0 missing, with those cells reported as VARIANTS of
+        the all-corners class (the matcher's seeded pick scatters them across the
+        island interior) — this is the exact clean coverage a real biome ground
+        layer needs."""
+        texture_res = self._make_interior_fixture_atlas(tmp_project, monkeypatch)
+        cfg_path = self._config_with_interior(tmp_path, texture_res)
+        build_result = procgen.tileset_build(cfg_path, "res://tilesets/minifantasy_interior.tres")
+        assert build_result.startswith("OK"), build_result
+        # 15 block cells + 2 interior fill cells = 17 opaque tiles (non_transparent scan)
+        assert "tiles: 17" in build_result, build_result
+
+        audit_result = procgen.terrain_audit("res://tilesets/minifantasy_interior.tres")
+        # 16 of 16 MATCH_CORNERS classes covered, 0 missing; the all-corners class
+        # now carries 2 tiles, so exactly 1 variant signature is reported.
+        assert "| 0 | grass | MATCH_CORNERS | 16 | 16 | 0 | 1 |" in audit_result, audit_result
+
+        fenced = audit_result.split("```json", 1)[1].split("```", 1)[0]
+        coverage = json.loads(fenced)
+        cov = coverage["0"]
+        assert cov["mode"] == "MATCH_CORNERS"
+        assert cov["expected_count"] == 16
+        assert cov["covered_count"] == 16
+        assert cov["missing"] == []
+
+        all_corners_key = "BOTTOM_LEFT_CORNER,BOTTOM_RIGHT_CORNER,TOP_LEFT_CORNER,TOP_RIGHT_CORNER"
+        # the two interior cells are variants of the single all-corners class
+        assert set(cov["variants"].keys()) == {all_corners_key}, cov["variants"]
+        variant_coords = sorted(t["coords"] for t in cov["variants"][all_corners_key])
+        assert variant_coords == [[3, 0], [4, 0]], variant_coords
+        # and the all-corners signature in `signatures` carries exactly those two
+        assert sorted(t["coords"] for t in cov["signatures"][all_corners_key]) == [[3, 0], [4, 0]]

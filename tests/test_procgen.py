@@ -230,6 +230,51 @@ class TestMinifantasyEdgesTable:
         # the water-center cell (1,1) at atlas (26,4) carries no bits
         assert resolved[(26, 4)] == []
 
+    def test_interior_cells_get_exactly_the_four_diagonal_corner_bits(self):
+        """The `interior` param supplies the full-interior all-4-corners class the
+        15-cell pond block omits. Each listed ABSOLUTE atlas cell must resolve to
+        exactly the 4 diagonal corner bits (TL,TR,BL,BR) — no more, no less, and
+        never an axis-aligned CORNER bit."""
+        asn = {
+            "strategy": "minifantasy_edges",
+            "terrain": "grass",
+            "origin": [25, 3],
+            "interior": [[2, 3], [3, 3], [4, 3]],
+        }
+        resolved = procgen._resolve_assign_bits(asn, (25, 3))
+        # 15 block cells + 3 interior fill cells, all distinct coords
+        assert len(resolved) == 18
+        all_corners = {
+            "TOP_LEFT_CORNER", "TOP_RIGHT_CORNER", "BOTTOM_LEFT_CORNER", "BOTTOM_RIGHT_CORNER",
+        }
+        for cell in [(2, 3), (3, 3), (4, 3)]:
+            assert set(resolved[cell]) == all_corners, f"interior {cell} not all-4-corners"
+            assert len(resolved[cell]) == 4, f"interior {cell} has duplicate/extra bits"
+
+    def test_interior_cells_are_absolute_not_origin_translated(self):
+        """Interior coords are ABSOLUTE atlas cells (the biome's solid-ground fill
+        area), NOT block-relative — they must NOT be shifted by `origin`."""
+        asn = {
+            "strategy": "minifantasy_edges",
+            "terrain": "grass",
+            "origin": [25, 3],
+            "interior": [[2, 3]],
+        }
+        resolved = procgen._resolve_assign_bits(asn, (25, 3))
+        assert (2, 3) in resolved  # exactly where the config named it
+        assert (27, 6) in resolved  # the edge block is still origin-translated
+
+    def test_interior_omitted_leaves_the_bare_15_cell_block(self):
+        """No `interior` key -> unchanged 15-cell behavior (the all-corners class
+        stays missing), so the param is a pure, opt-in extension."""
+        asn = {"strategy": "minifantasy_edges", "terrain": "grass", "origin": [0, 0]}
+        resolved = procgen._resolve_assign_bits(asn, (0, 0))
+        assert len(resolved) == 15
+        all_corners = {
+            "TOP_LEFT_CORNER", "TOP_RIGHT_CORNER", "BOTTOM_LEFT_CORNER", "BOTTOM_RIGHT_CORNER",
+        }
+        assert all(set(b) != all_corners for b in resolved.values())
+
 
 # --- config validation ------------------------------------------------------
 
@@ -419,6 +464,71 @@ class TestConfigValidation:
         cfg["atlas"][0]["scan"] = "explicit"
         with pytest.raises(procgen.ConfigError, match="explicit"):
             procgen.validate_config(cfg)
+
+    def test_minifantasy_edges_interior_param_validates(self):
+        """A minifantasy_edges assign with a well-formed `interior` list of
+        [col,row] pairs must validate cleanly."""
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "minifantasy_edges",
+                "terrain": "grass",
+                "origin": [25, 3],
+                "interior": [[2, 3], [3, 3], [4, 3]],
+            }
+        ]
+        procgen.validate_config(cfg)  # must not raise
+
+    def test_malformed_interior_is_a_clean_config_error(self):
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "minifantasy_edges",
+                "terrain": "grass",
+                "interior": [[2, 3], [3]],  # second entry is not an int pair
+            }
+        ]
+        with pytest.raises(procgen.ConfigError, match="`interior` must be"):
+            procgen.validate_config(cfg)
+
+    def test_interior_rejected_on_explicit_strategy(self):
+        """`interior` is only valid with minifantasy_edges (its full-interior tile
+        goes in `tiles` for explicit); reject it rather than silently ignore."""
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "explicit",
+                "terrain": "grass",
+                "tiles": [{"coords": [0, 0], "bits": []}],
+                "interior": [[2, 3]],
+            }
+        ]
+        with pytest.raises(procgen.ConfigError, match="only valid with strategy='minifantasy_edges'"):
+            procgen.validate_config(cfg)
+
+    def test_interior_rejected_on_blob_strategy(self):
+        """`interior` is only for minifantasy_edges (whose 3x5 block omits the
+        interior). The blob47/blob16 tables already cover the interior class, so
+        `interior` there is nonsensical and must be rejected, not silently applied."""
+        for strat in ("blob47", "blob16_sides", "blob16_corners"):
+            cfg = _min_cfg()
+            cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+            cfg["terrain_assign"] = [
+                {
+                    "atlas": "ground",
+                    "strategy": strat,
+                    "terrain": "grass",
+                    "interior": [[2, 3]],
+                }
+            ]
+            with pytest.raises(procgen.ConfigError, match="only valid with strategy='minifantasy_edges'"):
+                procgen.validate_config(cfg)
 
     def test_mixed_atlas_decor_random_start_on_non_terrain_cells_validates(self):
         """P1-hardening finding #2: the water-bearing rule is TILE-level, not

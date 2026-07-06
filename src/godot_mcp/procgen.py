@@ -118,6 +118,13 @@ _CORNER_BITS = {
 
 _SIDES = ("N", "E", "S", "W")
 _CORNERS = ("NE", "SE", "SW", "NW")
+# The full-interior (all 4 corners land) MATCH_CORNERS signature: the solid
+# ground fill tile. This is the one class the 15-cell minifantasy_edges pond
+# block never depicts, supplied instead by the `interior` param (see
+# `_resolve_assign_bits`). Kept as the diagonal `_CORNER_BITS` in a fixed order
+# so an `interior` cell and the audit's expected all-corners class produce the
+# identical signature key.
+_ALL_CORNER_BITS: list[str] = [_CORNER_BITS[c] for c in _CORNERS]
 # A diagonal corner is only "filled" if BOTH its adjacent sides are filled;
 # this is what collapses the 256 raw 8-neighbor cases to 47 canonical classes.
 _CORNER_ADJ = {"NE": ("N", "E"), "SE": ("S", "E"), "SW": ("S", "W"), "NW": ("N", "W")}
@@ -220,9 +227,12 @@ def blob16_corners_table(width: int = 4) -> dict[tuple[int, int], list[str]]:
 #
 # The 15 cells cover 15 of the 16 MATCH_CORNERS classes with NO duplicates; the
 # only class absent is the full-interior (all 4 corners land) tile, which a pond
-# ring never depicts. `procgen_terrain_audit` therefore reports 15/16 covered,
-# 1 missing (the all-corners interior) for a sheet built with this strategy —
-# expected, not a defect (the matcher's miss-fallback covers that lone case).
+# ring never depicts. A bare `minifantasy_edges` sheet therefore audits 15/16
+# covered, 1 missing (the all-corners interior). The `interior` param on the
+# terrain_assign (see `_resolve_assign_bits`) supplies that lone class from the
+# biome's SOLID GROUND fill cells, taking a full-biome ground layer to 16/16;
+# multiple interior cells are variants of the all-corners signature (the
+# matcher's seeded pick scatters them across the island interior).
 _MINIFANTASY_EDGES_LAND_CORNERS: dict[tuple[int, int], tuple[str, ...]] = {
     (0, 0): ("NW", "NE", "SW"),
     (1, 0): ("NW", "NE"),
@@ -405,6 +415,18 @@ def validate_config(cfg: dict) -> dict:
         _require(asn.get("terrain") in terrain_names, f"terrain_assign references unknown terrain {asn.get('terrain')!r}")
         if strat == "explicit":
             _require(isinstance(asn.get("tiles"), list) and asn["tiles"], "terrain_assign strategy='explicit' needs a per-tile bits list")
+        if "interior" in asn:
+            _require(
+                strat == "minifantasy_edges",
+                "terrain_assign: `interior` is only valid with strategy='minifantasy_edges' (its 3x5 edge "
+                "block omits the full-interior tile). The blob47/blob16 tables already cover the interior "
+                "class; for 'explicit', list the interior tile in `tiles` with its 4 diagonal corner bits.",
+            )
+            interior = asn["interior"]
+            _require(
+                isinstance(interior, list) and all(_is_int_pair(c) for c in interior),
+                f"terrain_assign: `interior` must be a list of [col, row] int pairs, got {interior!r}",
+            )
 
     # Animation groups: atlas resolves; water-bearing groups (the animated
     # TILE ITSELF carries a terrain) must be mode='default' so coastline water
@@ -531,6 +553,16 @@ def _resolve_assign_bits(asn: dict, atlas_origin: tuple[int, int]) -> dict[tuple
 
     For blob strategies, pull the offset->bits table and translate by origin.
     For 'explicit', read per-tile bits straight from the config.
+
+    The optional `interior` param (a list of [col, row] ABSOLUTE atlas cells)
+    supplies the full-interior all-4-corners signature the strategy's own table
+    may omit — specifically `minifantasy_edges`, whose 15-cell pond block covers
+    only 15 of the 16 MATCH_CORNERS classes (the solid-ground fill is absent).
+    Each interior cell is assigned exactly the 4 diagonal corner bits, so with
+    >=1 interior cell the sheet covers 16/16; multiple interior cells are all the
+    same all-corners signature and surface in the audit as variants (the matcher's
+    seeded pick scatters them across the island interior). Interior coords are
+    ABSOLUTE (not block-relative), so they are NOT translated by origin.
     """
     strat = asn["strategy"]
     if strat == "explicit":
@@ -541,7 +573,10 @@ def _resolve_assign_bits(asn: dict, atlas_origin: tuple[int, int]) -> dict[tuple
         return out
     table = _STRATEGY_TABLES[strat]()
     ox, oy = asn.get("origin", list(atlas_origin))
-    return {(ox + col, oy + row): bits for (col, row), bits in table.items()}
+    resolved = {(ox + col, oy + row): bits for (col, row), bits in table.items()}
+    for cell in asn.get("interior", []):
+        resolved[(int(cell[0]), int(cell[1]))] = list(_ALL_CORNER_BITS)
+    return resolved
 
 
 def _gd_vec2i(x: int, y: int) -> str:
