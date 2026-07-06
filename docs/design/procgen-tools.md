@@ -121,6 +121,43 @@ def corner_signature_key(mask, x, y):
     return ",".join(sorted(bits))
 ```
 
-Resolve wrapper (also ported): exact-match `corner_signature_key` in `coverage[set]["signatures"]`; among variant tiles for a key, a seeded position-stable pick tie-broken by `(source_id, atlas_x, atlas_y)` order; on a miss, fall back to the full-interior tile (`BOTTOM_LEFT_CORNER,BOTTOM_RIGHT_CORNER,TOP_LEFT_CORNER,TOP_RIGHT_CORNER`) and emit a loud debug line. On a full sheet the fallback is never reached (0 misses here).
+Resolve wrapper (also ported): exact-match `corner_signature_key` in `coverage[set]["signatures"]`; among variant tiles for a key, a seeded position-stable **WEIGHTED** pick (below) tie-broken by `(source_id, atlas_x, atlas_y)` order; on a miss, fall back to the full-interior tile (`BOTTOM_LEFT_CORNER,BOTTOM_RIGHT_CORNER,TOP_LEFT_CORNER,TOP_RIGHT_CORNER`) and emit a loud debug line. On a full sheet the fallback is never reached (0 misses here).
+
+**Per-variant weighting (added 2026-07-06).** Each tile dict in `coverage[set]["signatures"]` now carries a `weight` float (relative, positive; default `1.0` for unweighted builds — see `procgen_terrain_audit`'s coverage-dict contract). The variant pick is a DETERMINISTIC WEIGHTED roll: a variant's probability is proportional to its weight, so a biome interior can be mostly one tile (plain grass `0.9`) with rare variants (tufts `0.05` each). Weights are RELATIVE — `[0.9, 0.05, 0.05]` and `[18, 1, 1]` behave identically (normalized at pick time). Equal weights reduce EXACTLY to the prior uniform pick (`int(u * n)` over the sorted variants), so unweighted sheets are unaffected. The weight flows config (`interior` entry `[col, row, weight]`) → the tile's `weight` custom-data layer in the `.tres` → the audit `coverage` dict → this pick. The game ports this verbatim alongside `corner_signature_key`:
+
+```python
+_U32 = 0xFFFFFFFF
+
+def _cell_hash01(seed, x, y):
+    """Deterministic pseudo-random value in [0, 1) for a cell (FNV-1a-style
+    32-bit mix; pure integer ops so a GDScript port is bit-identical — Godot
+    ints are 64-bit, the & _U32 masks keep every step inside 32 bits)."""
+    h = 2166136261
+    for v in (seed, x & _U32, y & _U32):
+        h ^= v & _U32
+        h = (h * 16777619) & _U32
+        h ^= (h >> 15)
+        h = (h * 2246822519) & _U32
+    h ^= (h >> 13)
+    h &= _U32
+    return h / 4294967296.0
+
+def pick_variant(variants, x, y, seed):
+    """Pick one variant tile for cell (x, y) by a deterministic WEIGHTED roll.
+    `variants` is coverage[set]["signatures"][key]; each dict has source_id,
+    coords [ax, ay], and weight (default 1.0). Same (variants, x, y, seed) ->
+    same tile; chance ∝ weight_i / sum(weight); equal weights -> uniform."""
+    ordered = sorted(variants, key=lambda t: (t["source_id"], t["coords"][0], t["coords"][1]))
+    weights = [float(t.get("weight", 1.0)) for t in ordered]
+    total = sum(weights)
+    u = _cell_hash01(seed, x, y)
+    target = u * total
+    cumulative = 0.0
+    for tile, w in zip(ordered, weights):
+        cumulative += w
+        if target < cumulative:
+            return tile
+    return ordered[-1]
+```
 
 This unblocks the game plan's phase 3 (`terrain_matcher.gd`), with one carry-in: the game's tileset build must supply the diagonal-corner bits (via `explicit`/`minifantasy_edges`), not the current `blob16_corners` strategy, until that module bug is fixed.

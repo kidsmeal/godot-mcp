@@ -337,6 +337,48 @@ def _is_int_pair(v: object) -> bool:
     return isinstance(v, list) and len(v) == 2 and all(isinstance(n, int) for n in v)
 
 
+# Default per-tile weight when a variant carries no explicit weight — the
+# unweighted case. Weights are RELATIVE (normalized at pick time), so a default
+# of 1.0 across every tile reproduces the prior uniform seeded pick exactly.
+_DEFAULT_WEIGHT = 1.0
+
+# The custom-data layer weights are baked into. A float per tile; the audit
+# reads it back into each coverage-dict variant entry (default 1.0 when absent).
+# This name is the build<->audit<->matcher contract, keep it stable.
+_WEIGHT_LAYER_NAME = "weight"
+
+
+def _parse_weighted_cell(entry: object) -> tuple[tuple[int, int], float] | None:
+    """Parse one `interior` entry into ((col, row), weight), or None if malformed.
+
+    Two accepted shapes (chosen ONE clean form — the 3-element list — over a
+    parallel dict shape so TOML/JSON configs stay a single list-of-lists):
+      - bare `[col, row]`            -> default weight (unweighted, back-compat)
+      - weighted `[col, row, weight]` -> explicit RELATIVE weight (positive number)
+    Returns None for anything else (wrong length, non-int coords, non-positive or
+    non-numeric weight) so callers can raise a clean ConfigError. Weights ride the
+    same list rail variants already use, so any future variant tile (edge variants)
+    can carry a weight the same way.
+    """
+    if not isinstance(entry, list):
+        return None
+    if len(entry) == 2:
+        if not all(isinstance(n, int) for n in entry):
+            return None
+        return (int(entry[0]), int(entry[1])), _DEFAULT_WEIGHT
+    if len(entry) == 3:
+        col, row, weight = entry
+        if not (isinstance(col, int) and isinstance(row, int)):
+            return None
+        # bool is an int subclass; reject True/False as a weight explicitly.
+        if not (isinstance(weight, (int, float)) and not isinstance(weight, bool)):
+            return None
+        if not (weight > 0):
+            return None
+        return (int(col), int(row)), float(weight)
+    return None
+
+
 def _base_region_cells(base_region: list) -> set[tuple[int, int]]:
     """Expand a validated `base_region` ([[x0,y0],[x1,y1]] inclusive rect) into
     the set of (x, y) base-tile coords it covers. Callers must validate the
@@ -424,9 +466,16 @@ def validate_config(cfg: dict) -> dict:
             )
             interior = asn["interior"]
             _require(
-                isinstance(interior, list) and all(_is_int_pair(c) for c in interior),
-                f"terrain_assign: `interior` must be a list of [col, row] int pairs, got {interior!r}",
+                isinstance(interior, list),
+                f"terrain_assign: `interior` must be a list of [col, row] (optionally [col, row, weight]) "
+                f"entries, got {interior!r}",
             )
+            for entry in interior:
+                _require(
+                    _parse_weighted_cell(entry) is not None,
+                    f"terrain_assign: `interior` must be [col, row] int pairs or [col, row, weight] "
+                    f"entries with a positive number weight; bad entry {entry!r}",
+                )
 
     # Animation groups: atlas resolves; water-bearing groups (the animated
     # TILE ITSELF carries a terrain) must be mode='default' so coastline water
@@ -501,9 +550,19 @@ def validate_config(cfg: dict) -> dict:
                     "the same atlas may still use 'random_start'"
                 )
 
-    # Custom data layers: known types.
+    # Custom data layers: known types. `weight` is a RESERVED float layer (the
+    # per-variant weighting contract the build/audit/matcher share) — a config
+    # that declares its own `weight` layer with any other type would silently
+    # break weight reads, so require float explicitly instead of letting a
+    # mistyped layer through the generic type check.
     for cd in (cfg.get("custom_data") or {}).get("layers") or []:
         _require(cd.get("type") in _VARIANT_TYPES, f"custom_data layer {cd.get('name')!r}: unsupported type {cd.get('type')!r}")
+        if cd.get("name") == _WEIGHT_LAYER_NAME:
+            _require(
+                cd.get("type") == "float",
+                f"custom_data layer {_WEIGHT_LAYER_NAME!r} is reserved for per-variant weighting and must be "
+                f"type = \"float\", got {cd.get('type')!r}",
+            )
 
     return cfg
 
@@ -554,15 +613,19 @@ def _resolve_assign_bits(asn: dict, atlas_origin: tuple[int, int]) -> dict[tuple
     For blob strategies, pull the offset->bits table and translate by origin.
     For 'explicit', read per-tile bits straight from the config.
 
-    The optional `interior` param (a list of [col, row] ABSOLUTE atlas cells)
-    supplies the full-interior all-4-corners signature the strategy's own table
-    may omit — specifically `minifantasy_edges`, whose 15-cell pond block covers
-    only 15 of the 16 MATCH_CORNERS classes (the solid-ground fill is absent).
-    Each interior cell is assigned exactly the 4 diagonal corner bits, so with
-    >=1 interior cell the sheet covers 16/16; multiple interior cells are all the
-    same all-corners signature and surface in the audit as variants (the matcher's
-    seeded pick scatters them across the island interior). Interior coords are
-    ABSOLUTE (not block-relative), so they are NOT translated by origin.
+    The optional `interior` param (a list of ABSOLUTE atlas cells, each `[col,
+    row]` or `[col, row, weight]`) supplies the full-interior all-4-corners
+    signature the strategy's own table may omit — specifically
+    `minifantasy_edges`, whose 15-cell pond block covers only 15 of the 16
+    MATCH_CORNERS classes (the solid-ground fill is absent). Each interior cell
+    is assigned exactly the 4 diagonal corner bits, so with >=1 interior cell the
+    sheet covers 16/16; multiple interior cells are all the same all-corners
+    signature and surface in the audit as variants (the matcher's WEIGHTED seeded
+    pick scatters them across the island interior by their weights). Interior
+    coords are ABSOLUTE (not block-relative), so they are NOT translated by
+    origin. The optional per-cell weight is handled separately by
+    `_resolve_assign_weights` (baked into the `weight` custom-data layer) — this
+    function only maps coords -> bits.
     """
     strat = asn["strategy"]
     if strat == "explicit":
@@ -574,9 +637,33 @@ def _resolve_assign_bits(asn: dict, atlas_origin: tuple[int, int]) -> dict[tuple
     table = _STRATEGY_TABLES[strat]()
     ox, oy = asn.get("origin", list(atlas_origin))
     resolved = {(ox + col, oy + row): bits for (col, row), bits in table.items()}
-    for cell in asn.get("interior", []):
-        resolved[(int(cell[0]), int(cell[1]))] = list(_ALL_CORNER_BITS)
+    for entry in asn.get("interior", []):
+        cell, _weight = _parse_weighted_cell(entry) or ((int(entry[0]), int(entry[1])), _DEFAULT_WEIGHT)
+        resolved[cell] = list(_ALL_CORNER_BITS)
     return resolved
+
+
+def _resolve_assign_weights(asn: dict, atlas_origin: tuple[int, int]) -> dict[tuple[int, int], float]:
+    """Resolve a terrain_assign into {atlas_coords: weight} for the GDScript.
+
+    The parallel rail to `_resolve_assign_bits`: weights ride the SAME per-tile
+    plumbing bits do, so any variant tile can carry a relative weight. Only cells
+    with an EXPLICIT weight are returned; cells without one default to
+    `_DEFAULT_WEIGHT` at bake time (the build script writes 1.0 for every
+    terrain-bearing tile absent from this map). Today only `interior` entries can
+    carry a weight (`[col, row, weight]`); edge/blob variants are a future
+    extension that would populate this map the same way. Interior coords are
+    ABSOLUTE (not origin-translated), matching `_resolve_assign_bits`.
+    """
+    weights: dict[tuple[int, int], float] = {}
+    for entry in asn.get("interior", []):
+        parsed = _parse_weighted_cell(entry)
+        if parsed is None:
+            continue
+        cell, weight = parsed
+        if weight != _DEFAULT_WEIGHT:
+            weights[cell] = weight
+    return weights
 
 
 def _gd_vec2i(x: int, y: int) -> str:
@@ -625,6 +712,32 @@ def compose_build_script(cfg: dict, out_path_res: str, nonce: str) -> str:
 
     for cd in (cfg.get("custom_data") or {}).get("layers") or []:
         plan["custom_data"].append({"name": cd["name"], "type": _VARIANT_TYPES[cd["type"]]})
+
+    # --- per-variant weighting bookkeeping ---------------------------------
+    # Weights travel WITH each tile in a `weight` custom-data layer (float,
+    # default 1.0). The layer is RESERVED (validate_config requires it be
+    # float if the config declares it itself). It comes to exist one of two
+    # ways: the config declares it directly (user-declared, already in
+    # plan["custom_data"] from the loop above), or some tile carries an
+    # explicit non-default weight (auto-added here). Either way, once the
+    # layer exists it must be FULLY populated (every terrain-bearing tile
+    # gets a float — its explicit weight or the 1.0 default) so the audit
+    # never reads an unpopulated/garbage value off a declared-but-untouched
+    # layer. Only when NEITHER condition holds do we add no layer at all, so
+    # a plain unweighted config's .tres stays byte-for-byte unchanged.
+    any_weight = any(
+        _resolve_assign_weights(asn, tuple(asn.get("origin", [0, 0])))
+        for asn in cfg.get("terrain_assign") or []
+    )
+    weight_layer_index = -1
+    for i, cd in enumerate(plan["custom_data"]):
+        if cd["name"] == _WEIGHT_LAYER_NAME:
+            weight_layer_index = i
+            break
+    if weight_layer_index == -1 and any_weight:
+        weight_layer_index = len(plan["custom_data"])
+        plan["custom_data"].append({"name": _WEIGHT_LAYER_NAME, "type": "TYPE_FLOAT"})
+    plan["weight_layer_index"] = weight_layer_index
 
     for ti, tset in enumerate(cfg.get("terrain_set") or []):
         mode = tset.get("mode", "match_corners_and_sides").upper()
@@ -694,12 +807,21 @@ def compose_build_script(cfg: dict, out_path_res: str, nonce: str) -> str:
                 }
             )
 
-        # Terrain assignments -> per-cell {terrain, bits}.
+        # Terrain assignments -> per-cell {terrain, bits, weight}. `weight` is
+        # baked only when the weight layer is active (weight_layer_index >= 0),
+        # in which case EVERY terrain-bearing tile gets a float — its explicit
+        # weight, or _DEFAULT_WEIGHT — so the layer is fully populated and the
+        # audit reads a real value off every variant.
         for asn in assigns_by_atlas.get(aid, []):
             terr = asn["terrain"]
-            bits_by_coords = _resolve_assign_bits(asn, tuple(asn.get("origin", [0, 0])))
+            origin = tuple(asn.get("origin", [0, 0]))
+            bits_by_coords = _resolve_assign_bits(asn, origin)
+            weight_by_coords = _resolve_assign_weights(asn, origin)
             for (cx, cy), bits in bits_by_coords.items():
-                atlas_plan["assign"][f"{cx},{cy}"] = {"terrain": terr, "bits": bits}
+                cell_assign: dict = {"terrain": terr, "bits": bits}
+                if weight_layer_index >= 0:
+                    cell_assign["weight"] = weight_by_coords.get((cx, cy), _DEFAULT_WEIGHT)
+                atlas_plan["assign"][f"{cx},{cy}"] = cell_assign
 
         plan["atlases"].append(atlas_plan)
 
@@ -761,6 +883,9 @@ func _build(warnings: Array) -> Dictionary:
 
 \tvar terrain_index: Dictionary = plan["terrain_index"]
 \tvar full_square: Array = plan["physics_full_square"]
+\t# -1 when no tile carries an explicit weight (no `weight` layer baked); else
+\t# the custom-data layer index the per-tile weight float is written into.
+\tvar weight_layer_index := int(plan.get("weight_layer_index", -1))
 
 \tvar atlas_report: Array = []
 \tvar total_tiles := 0
@@ -873,6 +998,11 @@ func _build(warnings: Array) -> Dictionary:
 \t\t\t\t\t\t\tbits_assigned += 1
 \t\t\t\t\tif full_square.has(tname):
 \t\t\t\t\t\t_add_full_square_collision(td, tile_size)
+\t\t\t\t\t# Bake the per-variant weight into the `weight` custom-data layer
+\t\t\t\t\t# (float; every terrain-bearing tile carries one when the layer is
+\t\t\t\t\t# active, defaulting to 1.0). This is what the audit reads back.
+\t\t\t\t\tif weight_layer_index >= 0 and a.has("weight"):
+\t\t\t\t\t\ttd.set_custom_data_by_layer_id(weight_layer_index, float(a["weight"]))
 
 \t\ttotal_tiles += made
 \t\ttotal_animated += animated
@@ -1176,6 +1306,14 @@ func _dump() -> Dictionary:
 \t\t\t"terrains": terrains,
 \t\t}})
 
+\t# Locate the `weight` custom-data layer once (index, or -1 if the tileset
+\t# has no weights baked). The per-tile weight rides this layer.
+\tvar weight_layer := -1
+\tfor cdi in range(ts.get_custom_data_layers_count()):
+\t\tif ts.get_custom_data_layer_name(cdi) == {json.dumps(_WEIGHT_LAYER_NAME)}:
+\t\t\tweight_layer = cdi
+\t\t\tbreak
+
 \tvar tiles: Array = []
 \tfor si in range(ts.get_source_count()):
 \t\tvar sid := ts.get_source_id(si)
@@ -1199,9 +1337,14 @@ func _dump() -> Dictionary:
 \t\t\tvar custom_data_present := false
 \t\t\tfor cdi in range(ts.get_custom_data_layers_count()):
 \t\t\t\tvar v = td.get_custom_data_by_layer_id(cdi)
-\t\t\t\tif v != null and v != "" and v != 0 and v != false:
+\t\t\t\tif _is_present_value(v):
 \t\t\t\t\tcustom_data_present = true
 \t\t\t\t\tbreak
+\t\t\t# Per-tile weight off the `weight` layer; default 1.0 when no such layer
+\t\t\t# (unweighted tileset) so the matcher always reads a usable relative weight.
+\t\t\tvar weight := 1.0
+\t\t\tif weight_layer >= 0:
+\t\t\t\tweight = float(td.get_custom_data_by_layer_id(weight_layer))
 \t\t\tvar frames := src.get_tile_animation_frames_count(coords)
 \t\t\tvar anim = null
 \t\t\tif frames > 1:
@@ -1220,6 +1363,7 @@ func _dump() -> Dictionary:
 \t\t\t\t"terrain": td.terrain,
 \t\t\t\t"bits": set_bits,
 \t\t\t\t"custom_data": custom_data_present,
+\t\t\t\t"weight": weight,
 \t\t\t\t"animation": anim,
 \t\t\t}})
 
@@ -1240,6 +1384,18 @@ func _anim_mode_name(mode: int) -> String:
 \tif mode == TileSetAtlasSource.TILE_ANIMATION_MODE_RANDOM_START_TIMES:
 \t\treturn "RANDOM_START_TIMES"
 \treturn "DEFAULT"
+
+# Is a custom-data value non-default (i.e. "present")? Type-dispatched so a
+# float layer (e.g. the `weight` layer) never hits a String/int comparison,
+# which GDScript rejects as invalid operands across types.
+func _is_present_value(v: Variant) -> bool:
+\tmatch typeof(v):
+\t\tTYPE_NIL: return false
+\t\tTYPE_STRING, TYPE_STRING_NAME: return String(v) != ""
+\t\tTYPE_INT: return int(v) != 0
+\t\tTYPE_FLOAT: return float(v) != 0.0
+\t\tTYPE_BOOL: return bool(v)
+\treturn true
 
 # Same compass-name -> CellNeighbor mapping as the build script (kept in sync
 # by hand; both are static engine-enum tables, not generated from each other).
@@ -1354,7 +1510,12 @@ def _audit_report(dump: dict, terrain_set: int) -> dict:
         by_sig: dict[str, list[dict]] = {}
         for t in tiles_in_set:
             key = _sig_key(t["bits"])
-            by_sig.setdefault(key, []).append({"source_id": t["source_id"], "coords": t["coords"]})
+            # `weight` is the relative per-variant weight (default 1.0 when the
+            # tileset has no `weight` custom-data layer); the matcher normalizes
+            # a signature's variant weights at pick time.
+            by_sig.setdefault(key, []).append(
+                {"source_id": t["source_id"], "coords": t["coords"], "weight": t.get("weight", _DEFAULT_WEIGHT)}
+            )
 
         expected_keys = {_sig_key(list(sig)) for sig in expected}
         covered_keys = set(by_sig.keys())
@@ -1492,13 +1653,19 @@ def terrain_audit(tileset_path: str, terrain_set: int = -1, timeout: int = 60) -
           missing: list[str]        # signature keys with NO tile (see key format below)
           variants: dict[str, list[dict]]   # signature keys with >1 tile (allowed)
           signatures: dict[str, list[dict]] # EVERY covered signature -> its tile(s)
-            each tile dict: {"source_id": int, "coords": [x, y]}
+            each tile dict: {"source_id": int, "coords": [x, y], "weight": float}
 
         Signature key format: comma-joined, alphabetically-sorted CellNeighbor
         bit names present in that signature (e.g. "BOTTOM_SIDE,RIGHT_SIDE"),
         or "" for the isolated/no-neighbors signature. The matcher computes
         its own 8-neighbor occupancy signature the same way (sorted, comma-
         joined bit names) and looks it up directly in `signatures`.
+
+        The `weight` per tile dict is the RELATIVE per-variant weight, read off
+        the tile's `weight` custom-data layer (default 1.0 when the tileset has
+        no such layer, i.e. an unweighted build). The matcher normalizes a
+        signature's variant weights at pick time, so a variant's probability is
+        proportional to its weight; equal weights reduce to the uniform pick.
 
     Never raises — load/scope errors come back as a structured "ERROR —" string.
     """

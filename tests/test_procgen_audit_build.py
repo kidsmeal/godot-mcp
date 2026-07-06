@@ -504,6 +504,70 @@ interior = [[3, 0], [4, 0]]
         p.write_text(cfg, encoding="utf-8")
         return str(p)
 
+    def _config_with_weighted_interior(self, tmp_path: Path, texture_res: str) -> str:
+        """Same widened fixture, but the two interior fill cells now carry
+        RELATIVE weights via the [col, row, weight] form: (3,0) heavy at 0.9,
+        (4,0) rare at 0.05. The build must auto-add a `weight` custom-data layer
+        and bake each tile's weight into it; the audit must read those weights
+        back into the coverage dict's variant entries — still 16/16."""
+        cfg = f"""
+[tileset]
+tile_size = [8, 8]
+
+[[atlas]]
+id = "ground"
+texture = "{texture_res}"
+scan = "non_transparent"
+
+[[terrain_set]]
+mode = "match_corners"
+terrains = [ {{ name = "grass", color = "#4c8f3c" }} ]
+
+[[terrain_assign]]
+atlas = "ground"
+strategy = "minifantasy_edges"
+terrain = "grass"
+origin = [0, 0]
+interior = [[3, 0, 0.9], [4, 0, 0.05]]
+"""
+        p = tmp_path / "minifantasy_weighted.toml"
+        p.write_text(cfg, encoding="utf-8")
+        return str(p)
+
+    def _config_with_user_declared_weight_layer_no_explicit_weights(self, tmp_path: Path, texture_res: str) -> str:
+        """Same widened fixture, but this time the config itself DECLARES a
+        float `weight` custom-data layer up front and gives NO explicit
+        interior weights at all (bare [col, row] cells only). The weight
+        layer must still come out FULLY populated — every terrain-bearing
+        tile at 1.0 — because the trigger for populating is "the layer
+        exists", not "some explicit weight was given"."""
+        cfg = f"""
+[tileset]
+tile_size = [8, 8]
+
+[[atlas]]
+id = "ground"
+texture = "{texture_res}"
+scan = "non_transparent"
+
+[[terrain_set]]
+mode = "match_corners"
+terrains = [ {{ name = "grass", color = "#4c8f3c" }} ]
+
+[custom_data]
+layers = [ {{ name = "weight", type = "float" }} ]
+
+[[terrain_assign]]
+atlas = "ground"
+strategy = "minifantasy_edges"
+terrain = "grass"
+origin = [0, 0]
+interior = [[3, 0], [4, 0]]
+"""
+        p = tmp_path / "minifantasy_user_weight_layer.toml"
+        p.write_text(cfg, encoding="utf-8")
+        return str(p)
+
     def test_synthetic_block_builds_and_audits_15_of_16(self, tmp_project, tmp_path, monkeypatch):
         texture_res = self._make_fixture_atlas(tmp_project, monkeypatch)
         cfg_path = self._config(tmp_path, texture_res)
@@ -573,3 +637,81 @@ interior = [[3, 0], [4, 0]]
         assert variant_coords == [[3, 0], [4, 0]], variant_coords
         # and the all-corners signature in `signatures` carries exactly those two
         assert sorted(t["coords"] for t in cov["signatures"][all_corners_key]) == [[3, 0], [4, 0]]
+        # unweighted build: every tile dict still carries a weight, all default 1.0
+        for tiles in cov["signatures"].values():
+            for t in tiles:
+                assert t["weight"] == 1.0, t
+
+    def test_weighted_interior_bakes_and_reads_back_weights_still_16_of_16(self, tmp_project, tmp_path, monkeypatch):
+        """The load-bearing weighting round-trip: a minifantasy_edges build whose
+        interior cells carry [col,row,weight] must (1) auto-add a `weight`
+        custom-data layer, (2) bake each tile's weight into it, and (3) audit
+        16/16 with the coverage dict's variant entries carrying the expected
+        weights read back from custom data. This is the config->custom-data->
+        coverage-dict rail the matcher's weighted pick consumes."""
+        texture_res = self._make_interior_fixture_atlas(tmp_project, monkeypatch)
+        cfg_path = self._config_with_weighted_interior(tmp_path, texture_res)
+        build_result = procgen.tileset_build(cfg_path, "res://tilesets/minifantasy_weighted.tres")
+        assert build_result.startswith("OK"), build_result
+        assert "tiles: 17" in build_result, build_result
+        # the weight layer was auto-added (config declared no custom_data layers)
+        assert "custom-data layers: 1" in build_result, build_result
+
+        audit_result = procgen.terrain_audit("res://tilesets/minifantasy_weighted.tres")
+        # weighting does not change coverage: still 16/16, 0 missing, 1 variant class
+        assert "| 0 | grass | MATCH_CORNERS | 16 | 16 | 0 | 1 |" in audit_result, audit_result
+
+        fenced = audit_result.split("```json", 1)[1].split("```", 1)[0]
+        cov = json.loads(fenced)["0"]
+        assert cov["covered_count"] == 16
+        assert cov["missing"] == []
+
+        all_corners_key = "BOTTOM_LEFT_CORNER,BOTTOM_RIGHT_CORNER,TOP_LEFT_CORNER,TOP_RIGHT_CORNER"
+        # the two interior variants carry their explicit weights, read off custom data
+        weight_by_coords = {tuple(t["coords"]): t["weight"] for t in cov["signatures"][all_corners_key]}
+        assert weight_by_coords[(3, 0)] == pytest.approx(0.9), weight_by_coords
+        assert weight_by_coords[(4, 0)] == pytest.approx(0.05), weight_by_coords
+        # every OTHER (edge) tile defaulted to weight 1.0 when the layer went active
+        edge_weights = {
+            tuple(t["coords"]): t["weight"]
+            for key, tiles in cov["signatures"].items()
+            for t in tiles
+            if key != all_corners_key
+        }
+        assert edge_weights, edge_weights
+        assert all(w == pytest.approx(1.0) for w in edge_weights.values()), edge_weights
+
+    def test_user_declared_weight_layer_with_no_explicit_weights_reads_back_all_1(
+        self, tmp_project, tmp_path, monkeypatch
+    ):
+        """The population-gap fix, end to end: a config that DECLARES its own
+        float `weight` custom-data layer but supplies NO explicit interior
+        weights must still bake every terrain-bearing tile to 1.0 — not leave
+        the layer unpopulated (which would make the audit read whatever
+        garbage default Godot gives an untouched custom-data float, instead of
+        a clean 1.0). Locks the build->custom-data->audit rail for the
+        user-declared-layer path the auto-add path already covered."""
+        texture_res = self._make_interior_fixture_atlas(tmp_project, monkeypatch)
+        cfg_path = self._config_with_user_declared_weight_layer_no_explicit_weights(tmp_path, texture_res)
+        build_result = procgen.tileset_build(cfg_path, "res://tilesets/minifantasy_user_weight_layer.tres")
+        assert build_result.startswith("OK"), build_result
+        assert "tiles: 17" in build_result, build_result
+        # the user's own declared layer is reused, not duplicated
+        assert "custom-data layers: 1" in build_result, build_result
+
+        audit_result = procgen.terrain_audit("res://tilesets/minifantasy_user_weight_layer.tres")
+        assert "| 0 | grass | MATCH_CORNERS | 16 | 16 | 0 | 1 |" in audit_result, audit_result
+
+        fenced = audit_result.split("```json", 1)[1].split("```", 1)[0]
+        cov = json.loads(fenced)["0"]
+        assert cov["covered_count"] == 16
+        assert cov["missing"] == []
+
+        # every terrain-bearing tile in every signature reads back a clean 1.0
+        all_weights = {
+            tuple(t["coords"]): t["weight"]
+            for tiles in cov["signatures"].values()
+            for t in tiles
+        }
+        assert all_weights, all_weights
+        assert all(w == pytest.approx(1.0) for w in all_weights.values()), all_weights

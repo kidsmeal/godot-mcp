@@ -276,6 +276,76 @@ class TestMinifantasyEdgesTable:
         assert all(set(b) != all_corners for b in resolved.values())
 
 
+# --- per-variant weighting: config parse + resolution -----------------------
+
+
+class TestWeightedInteriorResolution:
+    """Weights ride the SAME `interior` rail variants already use: a bare
+    [col,row] is the unweighted default (1.0), a [col,row,weight] carries an
+    explicit RELATIVE weight. `_resolve_assign_bits` still maps coords->bits
+    (weighted or not); `_resolve_assign_weights` is the parallel coords->weight
+    rail (explicit weights only; default cells are filled at bake time)."""
+
+    def test_parse_weighted_cell_accepts_both_shapes(self):
+        assert procgen._parse_weighted_cell([3, 0]) == ((3, 0), 1.0)
+        assert procgen._parse_weighted_cell([3, 0, 0.9]) == ((3, 0), 0.9)
+        # ints are fine as a relative weight (18,1,1 behaves like 0.9,0.05,0.05)
+        assert procgen._parse_weighted_cell([4, 0, 18]) == ((4, 0), 18.0)
+
+    def test_parse_weighted_cell_rejects_malformed(self):
+        assert procgen._parse_weighted_cell([3]) is None            # too short
+        assert procgen._parse_weighted_cell([3, 0, 0.5, 1]) is None  # too long
+        assert procgen._parse_weighted_cell([3, 0, 0]) is None       # zero weight
+        assert procgen._parse_weighted_cell([3, 0, -1.0]) is None    # negative weight
+        assert procgen._parse_weighted_cell([3, 0, "x"]) is None     # non-numeric weight
+        assert procgen._parse_weighted_cell([3, 0, True]) is None    # bool is not a weight
+        assert procgen._parse_weighted_cell(["a", 0]) is None        # non-int coord
+        assert procgen._parse_weighted_cell({"cell": [3, 0]}) is None  # dict shape not accepted
+
+    def test_bits_resolve_identically_for_weighted_and_bare_interior(self):
+        """A [col,row,weight] interior entry assigns the SAME all-4-corners bits
+        as a bare [col,row] — the weight is orthogonal to the peering bits."""
+        all_corners = {
+            "TOP_LEFT_CORNER", "TOP_RIGHT_CORNER", "BOTTOM_LEFT_CORNER", "BOTTOM_RIGHT_CORNER",
+        }
+        bare = procgen._resolve_assign_bits(
+            {"strategy": "minifantasy_edges", "terrain": "grass", "origin": [0, 0], "interior": [[3, 0]]}, (0, 0)
+        )
+        weighted = procgen._resolve_assign_bits(
+            {"strategy": "minifantasy_edges", "terrain": "grass", "origin": [0, 0], "interior": [[3, 0, 0.9]]}, (0, 0)
+        )
+        assert set(bare[(3, 0)]) == all_corners
+        assert set(weighted[(3, 0)]) == all_corners
+
+    def test_resolve_weights_returns_only_explicit_weights(self):
+        """Only cells with an EXPLICIT weight appear; a bare (default 1.0) cell
+        is absent — the build fills those with _DEFAULT_WEIGHT at bake time."""
+        asn = {
+            "strategy": "minifantasy_edges",
+            "terrain": "grass",
+            "origin": [0, 0],
+            "interior": [[3, 0, 0.9], [4, 0, 0.05], [5, 0]],  # last is bare/default
+        }
+        weights = procgen._resolve_assign_weights(asn, (0, 0))
+        assert weights == {(3, 0): 0.9, (4, 0): 0.05}
+        assert (5, 0) not in weights  # default cell not listed
+
+    def test_resolve_weights_absolute_not_origin_translated(self):
+        """Weighted interior coords are ABSOLUTE (like the bits), not shifted by
+        origin — the weight lands on exactly the cell the config named."""
+        asn = {
+            "strategy": "minifantasy_edges",
+            "terrain": "grass",
+            "origin": [25, 3],
+            "interior": [[2, 3, 0.9]],
+        }
+        assert procgen._resolve_assign_weights(asn, (25, 3)) == {(2, 3): 0.9}
+
+    def test_no_interior_weights_is_empty(self):
+        asn = {"strategy": "minifantasy_edges", "terrain": "grass", "origin": [0, 0]}
+        assert procgen._resolve_assign_weights(asn, (0, 0)) == {}
+
+
 # --- config validation ------------------------------------------------------
 
 
@@ -495,6 +565,52 @@ class TestConfigValidation:
         with pytest.raises(procgen.ConfigError, match="`interior` must be"):
             procgen.validate_config(cfg)
 
+    def test_weighted_interior_form_validates(self):
+        """A minifantasy_edges assign whose `interior` mixes bare [col,row] and
+        weighted [col,row,weight] entries (positive numbers) must validate."""
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "minifantasy_edges",
+                "terrain": "grass",
+                "origin": [25, 3],
+                "interior": [[2, 3, 0.9], [3, 3, 0.05], [4, 3]],  # weighted + weighted + bare
+            }
+        ]
+        procgen.validate_config(cfg)  # must not raise
+
+    def test_non_positive_weight_is_a_clean_config_error(self):
+        """A zero or negative weight is a clean ConfigError, not a stack trace."""
+        for bad_weight in (0, -0.1, -3):
+            cfg = _min_cfg()
+            cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+            cfg["terrain_assign"] = [
+                {
+                    "atlas": "ground",
+                    "strategy": "minifantasy_edges",
+                    "terrain": "grass",
+                    "interior": [[2, 3, bad_weight]],
+                }
+            ]
+            with pytest.raises(procgen.ConfigError, match="positive number weight"):
+                procgen.validate_config(cfg)
+
+    def test_non_numeric_weight_is_a_clean_config_error(self):
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "minifantasy_edges",
+                "terrain": "grass",
+                "interior": [[2, 3, "heavy"]],
+            }
+        ]
+        with pytest.raises(procgen.ConfigError, match="positive number weight"):
+            procgen.validate_config(cfg)
+
     def test_interior_rejected_on_explicit_strategy(self):
         """`interior` is only valid with minifantasy_edges (its full-interior tile
         goes in `tiles` for explicit); reject it rather than silently ignore."""
@@ -602,6 +718,23 @@ class TestConfigValidation:
         with pytest.raises(procgen.ConfigError, match="base_region"):
             procgen.load_config(str(p))
 
+    def test_user_declared_weight_layer_must_be_float(self):
+        """`weight` is a RESERVED float layer (the build<->audit<->matcher
+        per-variant weighting contract). A config that declares its own
+        `weight` custom-data layer with any other type must fail validation
+        with a clean ConfigError naming `weight` as reserved, rather than
+        silently letting a mistyped layer through and breaking weight reads
+        later at audit time."""
+        cfg = _min_cfg()
+        cfg["custom_data"] = {"layers": [{"name": "weight", "type": "string"}]}
+        with pytest.raises(procgen.ConfigError, match="'weight' is reserved"):
+            procgen.validate_config(cfg)
+
+    def test_user_declared_weight_layer_as_float_validates(self):
+        cfg = _min_cfg()
+        cfg["custom_data"] = {"layers": [{"name": "weight", "type": "float"}]}
+        procgen.validate_config(cfg)  # must not raise
+
 
 # --- GDScript composition ---------------------------------------------------
 
@@ -653,3 +786,121 @@ class TestComposeBuildScript:
         src = procgen.compose_build_script(cfg, "res://o.tres", "n3")
         assert "2,3" in src
         assert "TOP_SIDE" in src
+
+
+def _plan_from_source(src: str) -> dict:
+    """Extract the resolved plan dict compose_build_script embeds as the
+    PLAN_JSON string literal. The script line is `const PLAN_JSON := "<json>"`
+    where the json is a json.dumps'd python-repr'd string; peel both layers."""
+    import json as _json
+
+    marker = "const PLAN_JSON := "
+    line = next(ln for ln in src.splitlines() if ln.startswith(marker))
+    outer = _json.loads(line[len(marker):])  # the GDScript string literal -> the inner json text
+    return _json.loads(outer)
+
+
+def _weighted_interior_cfg() -> dict:
+    cfg = _min_cfg()
+    cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+    cfg["terrain_assign"] = [
+        {
+            "atlas": "ground",
+            "strategy": "minifantasy_edges",
+            "terrain": "grass",
+            "origin": [0, 0],
+            "interior": [[3, 0, 0.9], [4, 0, 0.05], [5, 0, 0.05]],
+        }
+    ]
+    return procgen.validate_config(cfg)
+
+
+class TestComposeBuildWeighting:
+    """Weights flow config -> plan -> per-tile `weight` custom-data layer. The
+    layer is baked ONLY when some tile carries an explicit weight, is auto-added
+    as TYPE_FLOAT, and never clobbers a user-declared `weight` layer."""
+
+    def test_unweighted_config_bakes_no_weight_layer(self):
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+        cfg["terrain_assign"] = [
+            {"atlas": "ground", "strategy": "minifantasy_edges", "terrain": "grass", "origin": [0, 0], "interior": [[3, 0]]}
+        ]
+        cfg = procgen.validate_config(cfg)
+        plan = _plan_from_source(procgen.compose_build_script(cfg, "res://o.tres", "nw"))
+        assert plan["weight_layer_index"] == -1
+        assert all(cd["name"] != "weight" for cd in plan["custom_data"])
+        # no assign carries a baked weight when the layer is inactive
+        for atlas in plan["atlases"]:
+            for cell in atlas["assign"].values():
+                assert "weight" not in cell
+
+    def test_weighted_config_auto_adds_float_weight_layer(self):
+        plan = _plan_from_source(procgen.compose_build_script(_weighted_interior_cfg(), "res://o.tres", "nw"))
+        assert plan["weight_layer_index"] == 0  # first (only) custom-data layer
+        assert plan["custom_data"][0] == {"name": "weight", "type": "TYPE_FLOAT"}
+
+    def test_weighted_config_bakes_every_terrain_tile_a_weight(self):
+        """With the layer active, EVERY terrain-bearing tile gets a float — the
+        explicit weight for named cells, _DEFAULT_WEIGHT for the rest — so the
+        layer is fully populated and the audit reads a real value off each."""
+        plan = _plan_from_source(procgen.compose_build_script(_weighted_interior_cfg(), "res://o.tres", "nw"))
+        assign = plan["atlases"][0]["assign"]
+        # the three named interior cells carry their explicit weights
+        assert assign["3,0"]["weight"] == 0.9
+        assert assign["4,0"]["weight"] == 0.05
+        assert assign["5,0"]["weight"] == 0.05
+        # every other terrain-bearing tile (the 15 edge cells) defaults to 1.0
+        assert all("weight" in cell for cell in assign.values())
+        assert assign["1,1"]["weight"] == 1.0  # water-center edge cell, default weight
+
+    def test_user_declared_weight_layer_is_not_clobbered(self):
+        """If the config already declares a `weight` custom-data layer, reuse its
+        index rather than appending a duplicate — the layer bookkeeping must not
+        double-add or shift the user's layer."""
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+        cfg["custom_data"] = {"layers": [{"name": "biome_id", "type": "string"}, {"name": "weight", "type": "float"}]}
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "minifantasy_edges",
+                "terrain": "grass",
+                "origin": [0, 0],
+                "interior": [[3, 0, 0.9]],
+            }
+        ]
+        cfg = procgen.validate_config(cfg)
+        plan = _plan_from_source(procgen.compose_build_script(cfg, "res://o.tres", "nw"))
+        names = [cd["name"] for cd in plan["custom_data"]]
+        assert names == ["biome_id", "weight"]  # no duplicate appended
+        assert plan["weight_layer_index"] == 1  # the user's existing weight layer
+        assert plan["atlases"][0]["assign"]["3,0"]["weight"] == 0.9
+
+    def test_user_declared_weight_layer_with_no_explicit_weights_is_still_fully_populated(self):
+        """The population gap this test locks: a config that declares its own
+        float `weight` custom-data layer but gives NO explicit interior weights
+        must still bake a weight into EVERY terrain-bearing tile (all 1.0) —
+        the trigger for populating is "the weight layer exists", not "some
+        explicit non-default weight was given". Without this, a user-declared
+        but unpopulated `weight` layer would read back as garbage at audit
+        time instead of a clean 1.0 default."""
+        cfg = _min_cfg()
+        cfg["terrain_set"] = [{"mode": "match_corners", "terrains": [{"name": "grass"}]}]
+        cfg["custom_data"] = {"layers": [{"name": "weight", "type": "float"}]}
+        cfg["terrain_assign"] = [
+            {
+                "atlas": "ground",
+                "strategy": "minifantasy_edges",
+                "terrain": "grass",
+                "origin": [0, 0],
+                "interior": [[3, 0]],  # bare cell, no explicit weight anywhere in this config
+            }
+        ]
+        cfg = procgen.validate_config(cfg)
+        plan = _plan_from_source(procgen.compose_build_script(cfg, "res://o.tres", "nw"))
+        assert plan["weight_layer_index"] == 0  # the user's declared layer, reused not duplicated
+        assert plan["custom_data"] == [{"name": "weight", "type": "TYPE_FLOAT"}]
+        assign = plan["atlases"][0]["assign"]
+        assert assign, "expected at least one terrain-bearing tile"
+        assert all(cell["weight"] == 1.0 for cell in assign.values()), assign

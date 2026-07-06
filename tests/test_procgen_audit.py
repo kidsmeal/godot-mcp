@@ -70,8 +70,8 @@ class TestSigKey:
 # --- raw-dump fixtures --------------------------------------------------------
 
 
-def _tile(source_id=0, coords=(0, 0), terrain_set=0, terrain=0, bits=None, custom_data=False, animation=None):
-    return {
+def _tile(source_id=0, coords=(0, 0), terrain_set=0, terrain=0, bits=None, custom_data=False, animation=None, weight=None):
+    tile = {
         "source_id": source_id,
         "coords": list(coords),
         "terrain_set": terrain_set,
@@ -80,6 +80,11 @@ def _tile(source_id=0, coords=(0, 0), terrain_set=0, terrain=0, bits=None, custo
         "custom_data": custom_data,
         "animation": animation,
     }
+    # A real GDScript dump always carries "weight"; leaving it off here (weight=None)
+    # exercises _audit_report's default-to-1.0 fallback for older/synthetic dumps.
+    if weight is not None:
+        tile["weight"] = weight
+    return tile
 
 
 def _terrain_set(index=0, mode="MATCH_SIDES", terrains=None):
@@ -326,7 +331,31 @@ class TestCoverageDictShape:
         for _key, tiles in cov["signatures"].items():
             assert isinstance(tiles, list)
             for t in tiles:
-                assert set(t.keys()) == {"source_id", "coords"}
+                assert set(t.keys()) == {"source_id", "coords", "weight"}
+
+    def test_tile_dict_weight_defaults_to_1_when_dump_omits_it(self):
+        """A dump without per-tile "weight" (unweighted tileset / older dump)
+        must still yield a usable relative weight of 1.0 in every tile dict, so
+        the matcher's normalization never divides by a missing key."""
+        dump = {"ok": True, "terrain_sets": [_terrain_set()], "tiles": _all_sides_tiles()}
+        report = procgen._audit_report(dump, terrain_set=-1)
+        cov = report["coverage"]["0"]
+        for tiles in cov["signatures"].values():
+            for t in tiles:
+                assert t["weight"] == 1.0
+
+    def test_tile_dict_carries_explicit_weight_from_dump(self):
+        """When the dump provides a per-tile weight (a weighted build), it must
+        flow through into the coverage tile dict unchanged."""
+        tiles = _all_sides_tiles()
+        tiles[0]["weight"] = 0.9
+        tiles[1]["weight"] = 0.05
+        dump = {"ok": True, "terrain_sets": [_terrain_set()], "tiles": tiles}
+        report = procgen._audit_report(dump, terrain_set=-1)
+        sigs = report["coverage"]["0"]["signatures"]
+        by_coords = {tuple(t["coords"]): t["weight"] for lst in sigs.values() for t in lst}
+        assert by_coords[tuple(tiles[0]["coords"])] == 0.9
+        assert by_coords[tuple(tiles[1]["coords"])] == 0.05
 
     def test_top_level_report_has_documented_keys(self):
         dump = {"ok": True, "terrain_sets": [_terrain_set()], "tiles": _all_sides_tiles()}
