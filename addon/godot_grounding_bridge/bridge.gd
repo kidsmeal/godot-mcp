@@ -125,15 +125,19 @@ func _process(_delta: float) -> void:
 					_idle_times.erase(iid)
 					continue
 
-				# Dispatch each complete newline-terminated line
+				# Dispatch each complete newline-terminated line. Pull the buffer into a
+				# typed local first: _bufs[iid] is a Variant (dict index), so := on its
+				# method results can't infer a type and 4.x rejects it.
+				var buf: PackedByteArray = _bufs[iid]
 				while true:
-					var nl_idx := _bufs[iid].find(10)  # byte 10 = '\n'
+					var nl_idx := buf.find(10)  # byte 10 = '\n'
 					if nl_idx < 0:
 						break
-					var line_bytes := _bufs[iid].slice(0, nl_idx)
-					_bufs[iid] = _bufs[iid].slice(nl_idx + 1)
+					var line_bytes := buf.slice(0, nl_idx)
+					buf = buf.slice(nl_idx + 1)
 					var line := line_bytes.get_string_from_utf8()
 					_enqueue_send(c, _dispatch(JSON.parse_string(line)))
+				_bufs[iid] = buf
 
 		# Flush outbound queue with put_partial_data to avoid blocking
 		if _out_bufs.has(iid) and _out_bufs[iid].size() > 0:
