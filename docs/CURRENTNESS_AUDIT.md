@@ -39,3 +39,6 @@ Should not pull attention unless a bug points back here.
 - Design says why it exists and what constraints it obeys.
 - Archive says what happened.
 - Memory says what must not be forgotten.
+
+## Deferred review notes
+- [x] `tests/test_procgen_biome_config.py` + `tests/test_procgen_biome_build.py`: codex phase-reviewer's sandbox cannot execute `.venv/Scripts/python.exe` ("Access is denied"), so it could not run the named pytest command — verification was static-read only (phase 1, biome-world plan). RESOLVED out-of-band: orchestrator re-ran locally, `21 passed`, plus full suite `489 passed / 7 skipped`, `ruff`, `mypy`, and `ci_smoke` all green.

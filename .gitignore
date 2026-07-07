@@ -17,5 +17,8 @@ data/godot_docs/
 # ClauDHD local session state
 .now/
 
+# Gantry transient per-phase sentinel (written by sentinel.js, cleared after review)
+.gantry/active-phase.json
+
 # Spike/evidence render artifacts (regenerate by re-running the spike)
 test-results/

@@ -396,6 +396,99 @@ def _base_region_cells(base_region: list) -> set[tuple[int, int]]:
     return {(bx, by) for by in range(by0, by1 + 1) for bx in range(bx0, bx1 + 1)}
 
 
+def _validate_biome_panel_block(kind: str, biome_name: str, block: object) -> None:
+    """Validate one `panel` or `coastline` sub-block of a `[[biome]]` entry.
+
+    Both blocks share the exact shape an ordinary `minifantasy_edges`
+    terrain_assign accepts (`origin`, optional `interior`) — `kind` is only
+    used for error messages. Callers must check the key's PRESENCE first
+    (`"panel" in b`); this only validates the shape once it is known present.
+    """
+    _require(isinstance(block, dict), f"biome {biome_name!r}: `{kind}` must be a table, got {block!r}")
+    assert isinstance(block, dict)
+    origin = block.get("origin", [0, 0])
+    _require(_is_int_pair(origin), f"biome {biome_name!r}: `{kind}`.origin must be an [int, int] pair, got {origin!r}")
+    if "interior" in block:
+        interior = block["interior"]
+        _require(
+            isinstance(interior, list),
+            f"biome {biome_name!r}: `{kind}`.interior must be a list of [col, row] (optionally [col, row, weight]) "
+            f"entries, got {interior!r}",
+        )
+        for entry in interior:
+            _require(
+                _parse_weighted_cell(entry) is not None,
+                f"biome {biome_name!r}: `{kind}`.interior must be [col, row] int pairs or [col, row, weight] "
+                f"entries with a positive number weight; bad entry {entry!r}",
+            )
+
+
+def _expand_biome_roster(cfg: dict, atlas_ids: set[str]) -> None:
+    """Expand the v3 `[[biome]]` roster + `biome_priority` IN PLACE into the
+    pre-existing `terrain_set`/`terrain_assign` config shape `validate_config`'s
+    own loops (below) and `compose_build_script` already consume — so a
+    biome-set config drives NO new builder code path, only new config-shape
+    sugar over the v2 primitives (one terrain per biome, two `minifantasy_edges`
+    terrain_assigns per biome: the land-land transition `panel` and the
+    land-lake `coastline`, per `biome-world.md` §2's "same 3x5 corner-Wang
+    block" reuse claim). No-op when the config carries no `[[biome]]` roster at
+    all, so a plain v2 config is completely unaffected (purely additive/opt-in).
+
+    Appends the derived terrain_set/terrain_assign entries AFTER any the config
+    already declares by hand, so a config may mix hand-written v2 terrain with
+    a `[[biome]]` roster without either clobbering the other.
+    """
+    roster = cfg.get("biome")
+    if not roster:
+        return
+    _require(isinstance(roster, list), f"[[biome]] must be a list of tables, got {roster!r}")
+
+    priority = cfg.get("biome_priority")
+    _require(
+        isinstance(priority, list) and all(isinstance(n, str) for n in priority),
+        f"biome_priority must be a list of biome name strings, got {priority!r}",
+    )
+    assert isinstance(priority, list)
+
+    biome_names: set[str] = set()
+    for b in roster:
+        _require(isinstance(b, dict), f"[[biome]] entries must be tables, got {b!r}")
+        name = b.get("name")
+        _require(isinstance(name, str) and name != "", f"biome entry needs a string name, got {name!r}")
+        assert isinstance(name, str)
+        _require(name not in biome_names, f"duplicate biome name in roster: {name!r}")
+        biome_names.add(name)
+        _require(name in priority, f"biome {name!r} declared in [[biome]] is missing from biome_priority {priority!r}")
+        _require(b.get("atlas") in atlas_ids, f"biome {name!r} references unknown atlas {b.get('atlas')!r}")
+        _require("panel" in b, f"biome {name!r} needs a `panel` (minifantasy_edges transition block)")
+        _validate_biome_panel_block("panel", name, b["panel"])
+        _require("coastline" in b, f"biome {name!r} needs a `coastline` (minifantasy_edges land/water block)")
+        _validate_biome_panel_block("coastline", name, b["coastline"])
+
+    for pname in priority:
+        _require(pname in biome_names, f"biome_priority names unknown biome {pname!r} (not declared in [[biome]])")
+
+    cfg["biome_priority"] = list(priority)
+
+    terrain_sets: list = cfg.setdefault("terrain_set", [])
+    terrain_assigns: list = cfg.setdefault("terrain_assign", [])
+    for b in roster:
+        name = b["name"]
+        atlas_id = b["atlas"]
+        terrain_sets.append({"mode": "match_corners", "terrains": [{"name": name}]})
+        for kind in ("panel", "coastline"):
+            block = b[kind]
+            asn: dict = {
+                "atlas": atlas_id,
+                "strategy": "minifantasy_edges",
+                "terrain": name,
+                "origin": list(block.get("origin", [0, 0])),
+            }
+            if "interior" in block:
+                asn["interior"] = block["interior"]
+            terrain_assigns.append(asn)
+
+
 def validate_config(cfg: dict) -> dict:
     """Validate a tileset_build config dict and return a normalized copy.
 
@@ -406,6 +499,12 @@ def validate_config(cfg: dict) -> dict:
     same atlas also carries terrain-bearing tiles elsewhere. Also validates each
     animation group's required fields (base_region shape, frames, frame_offset,
     duration). Raises ConfigError on the first violation.
+
+    v3 biome-set support: an optional `[[biome]]` roster + `biome_priority`
+    (a priority-ordered list of biome names) is expanded FIRST, in place, into
+    the same `terrain_set`/`terrain_assign` shape below already validates and
+    `compose_build_script` already consumes — see `_expand_biome_roster`. A
+    config with no `[[biome]]` key is completely unaffected.
     """
     _require(isinstance(cfg.get("tileset"), dict), "config missing [tileset] section")
     tile_size = cfg["tileset"].get("tile_size")
@@ -430,6 +529,12 @@ def validate_config(cfg: dict) -> dict:
         )
         if scan == "explicit":
             _require(isinstance(a.get("tiles"), list) and a["tiles"], f"atlas {aid}: scan='explicit' needs a [[atlas.tiles]] list")
+
+    # v3 biome-set roster: expand [[biome]] + biome_priority into terrain_set/
+    # terrain_assign IN PLACE, BEFORE the loops below validate them, so a
+    # biome-derived terrain set/assign is checked by the exact same code a
+    # hand-written one is (no parallel validation path to drift from it).
+    _expand_biome_roster(cfg, atlas_ids)
 
     # Terrain sets: one terrain per set (the law).
     terrain_sets = cfg.get("terrain_set") or []
