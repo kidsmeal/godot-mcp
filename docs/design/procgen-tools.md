@@ -161,3 +161,13 @@ def pick_variant(variants, x, y, seed):
 ```
 
 This unblocks the game plan's phase 3 (`terrain_matcher.gd`), with one carry-in: the game's tileset build must supply the diagonal-corner bits (via `explicit`/`minifantasy_edges`), not the current `blob16_corners` strategy, until that module bug is fixed.
+
+## §3.4 verdict — biome-set audit coverage (procgen v3, phase 3)
+
+**NO audit change needed (2026-07-08, `biome-world.plan.md` phase 3).** `procgen_terrain_audit` does not need biome-set or transition-specific coverage reporting. The existing per-terrain-set coverage loop already reports every biome role independently.
+
+**Why.** The v3 design pins **no per-biome-PAIR transition contract**. A higher-priority biome's transition panel is a uniformly transparent-outside block that carries no identity of the lower biome it feathers onto, and multi-biome junctions resolve per corner with no special-case logic (`biome-world.md` §2, §3.2). Because there is no pair-level art, there is no pair-level coverage for an audit to express. "Biome-set coverage" therefore reduces to each ROLE terrain set's own coverage, and `_audit_report` already scopes `tiles_in_set` strictly by `terrain_set`, so a biome-set tileset is structurally just N independent single-terrain rows.
+
+**Proven, not assumed.** Phase 2 split each biome into two single-terrain sets (`{biome}_panel`, `{biome}_coast`). Against a real headless build with a deliberately-introduced gap — cell `(2,0)` dropped from `desert_panel` only — the audit flags that role's missing signature (14 → 13 covered, 3 missing), while `desert_coast` (sibling role) and `swamp_panel` (sibling biome) both carry that exact signature and **neither erases the gap** in the same `terrain_audit()` call. Evidence lives in `tests/test_procgen_biome_audit.py`.
+
+**Carry-in.** This resolution depends on the phase-2 role split. Before it, panel and coastline shared one terrain per biome, so a missing panel class was silently backfilled by the coastline tile carrying the same signature — the audit reported CLEAN on the wrong role's art. Merging the roles again would reintroduce that masking and invalidate this verdict.
