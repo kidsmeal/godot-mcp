@@ -67,20 +67,34 @@ so the field stays per-region computable, deterministic, and seam-matching.
      cell and the 3x3 scan can miss the true nearest seed, silently degrading the
      Voronoi. Validate it rather than trusting the caller.
 
-2. **Radial harshness weighting — applied to the SEED, never the cell.** Each biome
-   carries a `harshness` in [0,1] (defaults, tunable: plains 0.0 gentlest, swamp
-   0.45, desert 0.7, ice 1.0 harshest). A seed at normalized radius
-   `t = clamp(r / world_radius, 0, 1)` draws its biome from a weighted pick,
-   `weight_i = exp(-(h_i - t)^2 / (2*sigma^2))`, using that seed's own hash. Gentler
-   biomes therefore dominate near the centre and harsher ones far out —
-   statistically.
+2. **Per-biome start distance — eligibility, not weighting** (revised 2026-07-08).
+   Each biome has a `min_hex`: how many hexes out from the centre it may first appear.
+   Defaults `plains 0, swamp 1, desert 2, ice 3`. Adjacent hex centres are
+   `hex_width = 64` tiles apart (§2.2), so the thresholds are 0 / 64 / 128 / 192 tiles.
 
-   **This is what prevents concentric rings.** Radius biases a random DRAW; it never
-   maps to a biome. Two seeds at the same radius can land on different biomes, so no
-   band can form. `sigma` is the mixing knob (larger = more blending, less banding).
-   **Never reintroduce a radius -> biome mapping.** An earlier phase-4 draft did
-   exactly that (distance bands cycling the biome list) and produced a bullseye
-   ripple that repeated desert->ice->swamp->plains outward forever.
+   A Voronoi **SEED** at radius `r` is eligible for every biome whose
+   `min_hex * hex_width <= r`, and draws uniformly among the eligible set from its own
+   hash. The **seed's** radius, never the cell's — otherwise a blob gets sliced into
+   concentric rings by its own cells' radii.
+
+   **No upper bound, no rim.** Plains stays eligible everywhere, so it never
+   disappears. Ice becomes possible past 3 hexes but competes with three others
+   forever after, so it never owns the edge. The mix gets RICHER outward; it does not
+   SHIFT outward. That is the whole difference from a weighting curve, which squeezes
+   each biome into an annulus and forces the harshest one to the rim.
+
+   The area-weighted shares then fall out of the model rather than being tuned. Over a
+   radius-8 world: **plains ~28%, swamp ~26%, desert ~24%, ice ~21%** — a slight plains
+   bias, for free. Blobs scatter too: plains is eligible at every radius so it appears
+   as several blobs, not one central disc.
+
+   **No radius -> biome mapping, ever.** Radius gates WHICH biomes may be drawn; the
+   draw is the seed's hash. Two seeds at the same radius can differ, so no band forms.
+   An early phase-4 draft mapped distance bands to a cycling biome list and produced a
+   bullseye ripple repeating desert->ice->swamp->plains outward forever.
+
+   This **replaces `harshness`, `sigma`, and `world_radius` entirely** — all three are
+   gone. Their Gaussian weighting was the thing pushing biomes into annuli.
 
 3. **Cellular-automata smoothing.** 3 passes of Moore-neighbourhood majority vote,
    ties broken by lowest biome index, organicizing the Voronoi edges.
@@ -95,6 +109,10 @@ so the field stays per-region computable, deterministic, and seam-matching.
    - A hash-jittered blend band beyond it lets plains bleed outward on an organic
      boundary (applied BEFORE the CA passes, so smoothing softens it), so the core
      never reads as a stamped circle.
+   - The core is still required even though only plains is eligible inside 1 hex: a
+     seed sitting just past the swamp threshold owns Voronoi cells *inward* of it, so
+     without the hard stamp a swamp blob can bleed into the start hex. Eligibility is
+     evaluated at the seed, so it cannot by itself guarantee anything about a cell.
 
 **The core is a disc, not a hex.** The biome map still knows nothing about the hex
 grid — it knows about a *centre*. The game places the start hex at the origin, and
