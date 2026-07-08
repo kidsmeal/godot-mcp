@@ -43,12 +43,29 @@ corner-Wang engine survives; the *law* forks and a worldgen front-end is added.
 How a cell's biome id is chosen. Every step is a pure function of `(seed, x, y)`,
 so the field stays per-region computable, deterministic, and seam-matching.
 
-1. **Voronoi blob regions.** Seed points sit on a hash-jittered lattice (spacing
-   sets region size). Each cell takes the biome of its nearest seed. This is the
-   painter v2 already verified headless (FastNoiseLite `TYPE_CELLULAR` +
-   `RETURN_CELL_VALUE` + domain warp); the Python tool reimplements its *shape*, not
-   its code. Nearest-seed scans the 3x3 lattice neighbourhood, so init needs no
-   neighbour grid and stays O(1) per cell.
+1. **Voronoi blob regions, domain-warped.** Seed points sit on a hash-jittered
+   lattice; the spacing (`region_size`) sets biome-region size. Each cell takes the
+   biome of its nearest seed. Before that lookup, the sample coordinate is displaced
+   by **smooth (value) noise** — the domain warp.
+
+   **The warp is not optional.** Without it, Voronoi cells meet along straight
+   polygon edges, and 3 CA passes only soften ~3 tiles of a ~140-tile region, so
+   boundaries render as long straight lines. The warp is what makes them wander.
+   White per-cell hash noise cannot do this; the warp needs interpolated value noise.
+
+   Nearest-seed scans the 3x3 lattice neighbourhood around the WARPED coordinate, so
+   init needs no neighbour grid and stays O(1) per cell. This is the painter v2
+   already verified headless (FastNoiseLite `TYPE_CELLULAR` + `RETURN_CELL_VALUE` +
+   domain warp); the Python tool reimplements its *shape*, not its code.
+
+   - **Scale.** Biome regions are HEX-SCALE, not tens of tiles: `region_size` ~140
+     tiles, roughly one hex across. `world_and_biomes.md`'s "organic blobs of roughly
+     8-20 tiles" counted ISLAND CELLS, each 96 art tiles wide — it never meant 14 art
+     tiles. A `region_size` in the low tens renders the world as biome speckle: a new
+     biome every few steps of the 40-tile viewport.
+   - **Constraint.** `jitter <= region_size / 2`, or a seed escapes its own lattice
+     cell and the 3x3 scan can miss the true nearest seed, silently degrading the
+     Voronoi. Validate it rather than trusting the caller.
 
 2. **Radial harshness weighting — applied to the SEED, never the cell.** Each biome
    carries a `harshness` in [0,1] (defaults, tunable: plains 0.0 gentlest, swamp
