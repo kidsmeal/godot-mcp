@@ -38,6 +38,52 @@ corner-Wang engine survives; the *law* forks and a worldgen front-end is added.
   v2 `minifantasy_edges`, with the "outside" transparent (lower biome shows
   through) instead of water. Verified in code (§5).
 
+### 2.1 The biome field (cemented 2026-07-08)
+
+How a cell's biome id is chosen. Every step is a pure function of `(seed, x, y)`,
+so the field stays per-region computable, deterministic, and seam-matching.
+
+1. **Voronoi blob regions.** Seed points sit on a hash-jittered lattice (spacing
+   sets region size). Each cell takes the biome of its nearest seed. This is the
+   painter v2 already verified headless (FastNoiseLite `TYPE_CELLULAR` +
+   `RETURN_CELL_VALUE` + domain warp); the Python tool reimplements its *shape*, not
+   its code. Nearest-seed scans the 3x3 lattice neighbourhood, so init needs no
+   neighbour grid and stays O(1) per cell.
+
+2. **Radial harshness weighting — applied to the SEED, never the cell.** Each biome
+   carries a `harshness` in [0,1] (defaults, tunable: plains 0.0 gentlest, swamp
+   0.45, desert 0.7, ice 1.0 harshest). A seed at normalized radius
+   `t = clamp(r / world_radius, 0, 1)` draws its biome from a weighted pick,
+   `weight_i = exp(-(h_i - t)^2 / (2*sigma^2))`, using that seed's own hash. Gentler
+   biomes therefore dominate near the centre and harsher ones far out —
+   statistically.
+
+   **This is what prevents concentric rings.** Radius biases a random DRAW; it never
+   maps to a biome. Two seeds at the same radius can land on different biomes, so no
+   band can form. `sigma` is the mixing knob (larger = more blending, less banding).
+   **Never reintroduce a radius -> biome mapping.** An earlier phase-4 draft did
+   exactly that (distance bands cycling the biome list) and produced a bullseye
+   ripple that repeated desert->ice->swamp->plains outward forever.
+
+3. **Cellular-automata smoothing.** 3 passes of Moore-neighbourhood majority vote,
+   ties broken by lowest biome index, organicizing the Voronoi edges.
+
+4. **Plains core, stamped last.** The world has a real centre (the hub, the start),
+   so a hard disc of plains at world origin guarantees every new game begins in an
+   all-plains start hex.
+   - `core_hard_radius` >= the start hex's circumradius + margin. For the ~140-tile
+     flat-to-flat hex of §4, circumradius = 140/sqrt(3) ~= 81 tiles, so ~88 with
+     margin. Nothing overrides this disc; it is stamped AFTER the CA passes, or
+     smoothing would erode the guarantee.
+   - A hash-jittered blend band beyond it lets plains bleed outward on an organic
+     boundary (applied BEFORE the CA passes, so smoothing softens it), so the core
+     never reads as a stamped circle.
+
+**The core is a disc, not a hex.** The biome map still knows nothing about the hex
+grid — it knows about a *centre*. The game places the start hex at the origin, and
+the disc is sized so whatever hex lands there is entirely plains. The only coupling
+is that one radius constant, documented here.
+
 ## 3. What THIS repo builds (TOOLS deltas — plan these)
 
 ### 3.1 Biome-set config for `procgen_tileset_build`
