@@ -101,6 +101,42 @@ grid — it knows about a *centre*. The game places the start hex at the origin,
 the disc is sized so whatever hex lands there is entirely plains. The only coupling
 is that one radius constant, documented here.
 
+### 2.2 World scale (canonical, 2026-07-08)
+
+The hex is defined by its **flat-to-flat width = 64 tiles (512 px)**. Everything else
+derives from that one number:
+
+| | tiles | px |
+|---|---|---|
+| flat-to-flat (width) | 64 | 512 |
+| apothem (centre → flat) | 32 | 256 |
+| circumradius = side length | 36.95 | 295.6 |
+| corner-to-corner (height) | 73.90 | 591.2 |
+| area | 3,547 cells | 227,023 px² |
+
+A hex is **3.94x the 320x180 viewport by AREA** (3,547 cells vs 900). That is what
+"3-4x the size of the viewport" meant — it is NOT 3-4 viewports across.
+
+The island is **radius 8 = 217 hexes** (`3R² + 3R + 1`), ~770k cells, matching the
+~200 playable tiles of the pre-pivot 15x15 grid.
+
+Derived field constants:
+- `core_hard_radius` = **40**. Must be ≥ the circumradius (36.95), because a hex's
+  farthest points from its centre are its six corners, sitting at exactly the
+  circumradius. 40 leaves ~3 tiles of margin. This is the all-plains start-hex
+  guarantee, and it is the reason the number is 40 and not a round 32 or 64.
+- `core_blend_radius` = **50**.
+- `region_size` = **210** (~10-hex biome blobs, per `world_and_biomes.md`'s "organic
+  blobs of roughly 8-20 tiles", where those tiles are hexes, not art tiles).
+- `world_radius` = **500** (area-effective radius of the 217-hex island).
+- **Origin = the CENTRE of cell `(0,0)`**, with core distance measured from cell
+  centres. Without this convention the disc and the hex each sit half a tile off, and
+  the all-plains guarantee gets decided by a float comparison at the hex corners.
+
+**Ring-bands are cut** (2026-07-08). Nothing in the world wants concentric structure
+any more. The only radial thing left is the soft harshness bias on each Voronoi
+seed's draw, so a ring appearing in a render is a bug with no defender.
+
 ## 3. What THIS repo builds (TOOLS deltas — plan these)
 
 ### 3.1 Biome-set config for `procgen_tileset_build`
@@ -158,10 +194,19 @@ NOT planned here. Captured so the game track has the decisions we locked:
   (keep unlock state), re-bake on approach (deterministic).
 - **Save format:** `seed + per-hex unlock state` only; terrain re-bakes from seed.
 
-Open reconciliation with `world_and_biomes.md` (for the game agent, not this repo):
-all-land removes the causeway economy gate; hex replaces the 15x15 square grid;
-fog vs biome-tinted haze; tile-size / streaming numbers. These are game-design
-rulings, resolved on the game track.
+Reconciliation with `world_and_biomes.md` (game track, not this repo).
+
+**Settled 2026-07-08.** Hex replaces the 15x15 square grid, island radius 8 = 217
+hexes. The canonical hex is 64 tiles flat-to-flat (§2.2). Ring-bands are cut. Hex
+unlock is **coin-based to start**, replacing the causeway build order that all-land
+made meaningless.
+
+**Still open on the game track.** (1) Fog vs the biome-tinted haze, which deliberately
+let you read region shapes for route planning — fog hides, haze reveals. (2) Surfaced
+by the two cuts above: **both original unlock gates are now gone.** The causeway was
+the economy gate; the band artifact was the skill gate. With coins the only gate, the
+coin curve must scale with ring distance, or nothing stops a player buying straight
+out to the ice rim and the gentle→harsh gradient gates nothing — it becomes scenery.
 
 ## 5. Verified reuse (grounded against `src/godot_mcp/procgen.py`, 2026-07-06)
 
