@@ -423,16 +423,38 @@ def _validate_biome_panel_block(kind: str, biome_name: str, block: object) -> No
             )
 
 
+#: Terrain-name suffix per `[[biome]]` sub-block "kind", keyed in the exact
+#: order `_expand_biome_roster` emits them (panel before coastline) so the
+#: derived terrain_set ordering is deterministic and matches the v3 two-pass
+#: draw contract's own panel-then-coastline framing.
+_BIOME_ROLE_SUFFIX: tuple[tuple[str, str], ...] = (("panel", "panel"), ("coastline", "coast"))
+
+
 def _expand_biome_roster(cfg: dict, atlas_ids: set[str]) -> None:
     """Expand the v3 `[[biome]]` roster + `biome_priority` IN PLACE into the
     pre-existing `terrain_set`/`terrain_assign` config shape `validate_config`'s
     own loops (below) and `compose_build_script` already consume — so a
     biome-set config drives NO new builder code path, only new config-shape
-    sugar over the v2 primitives (one terrain per biome, two `minifantasy_edges`
-    terrain_assigns per biome: the land-land transition `panel` and the
-    land-lake `coastline`, per `biome-world.md` §2's "same 3x5 corner-Wang
-    block" reuse claim). No-op when the config carries no `[[biome]]` roster at
-    all, so a plain v2 config is completely unaffected (purely additive/opt-in).
+    sugar over the v2 primitives. Each biome emits TWO single-terrain terrain
+    sets, one per draw-pass ROLE (`{biome}_panel` for the land-land transition
+    `panel` block, `{biome}_coast` for the land-lake `coastline` block), each
+    with its own `minifantasy_edges` terrain_assign pointed at its own role
+    terrain (per `biome-world.md` §2's "same 3x5 corner-Wang block" reuse
+    claim). No-op when the config carries no `[[biome]]` roster at all, so a
+    plain v2 config is completely unaffected (purely additive/opt-in).
+
+    FIX (2026-07-08 phase-2 amendment): the roster used to emit ONE terrain
+    set per biome with a single terrain shared by both the panel and
+    coastline assigns. That merged the two draw-pass roles under one terrain
+    identity, so (a) the game's two draw passes could not address "biome X's
+    PANEL tile for signature S" separately from "biome X's COASTLINE tile for
+    signature S" and (b) a missing panel class was silently covered by the
+    coastline tile sharing that signature, masking the audit's coverage gate.
+    Splitting into `{biome}_panel`/`{biome}_coast` terrain sets keeps v2's
+    "one terrain per terrain set" rule and makes each role independently
+    auditable — `_resolve_assign_bits` and `compose_build_script`'s
+    name-keyed `terrain_index` lookup are both untouched, since terrain
+    identity has always been a plain string name, never biome-aware.
 
     Appends the derived terrain_set/terrain_assign entries AFTER any the config
     already declares by hand, so a config may mix hand-written v2 terrain with
@@ -475,13 +497,14 @@ def _expand_biome_roster(cfg: dict, atlas_ids: set[str]) -> None:
     for b in roster:
         name = b["name"]
         atlas_id = b["atlas"]
-        terrain_sets.append({"mode": "match_corners", "terrains": [{"name": name}]})
-        for kind in ("panel", "coastline"):
+        for kind, suffix in _BIOME_ROLE_SUFFIX:
             block = b[kind]
+            terrain_name = f"{name}_{suffix}"
+            terrain_sets.append({"mode": "match_corners", "terrains": [{"name": terrain_name}]})
             asn: dict = {
                 "atlas": atlas_id,
                 "strategy": "minifantasy_edges",
-                "terrain": name,
+                "terrain": terrain_name,
                 "origin": list(block.get("origin", [0, 0])),
             }
             if "interior" in block:
